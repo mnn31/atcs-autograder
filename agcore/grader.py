@@ -123,13 +123,23 @@ class GradedSubmission:
         return 100.0 * self.total_earned / self.total_possible
 
 
-def grade(zip_path: Path, config: LabConfig) -> GradedSubmission:
+def grade(zip_path: Path, config: LabConfig,
+          submission: Optional[extractor.Submission] = None
+          ) -> GradedSubmission:
     """Run the full grading pipeline on one student zip.
 
-    Caller is responsible for eventually calling
-    graded.submission.cleanup() to wipe the temp workdir.
+    @param zip_path path to the student submission zip
+    @param config lab-specific configuration
+    @param submission optional pre-extracted submission. When provided, the
+                      grader will not unzip again -- handy for callers that
+                      want to inspect the extracted tree (e.g. to pick an
+                      output filename based on @author) before grading.
+    @return GradedSubmission with every stage's results attached.
+    @postcondition caller must eventually call graded.submission.cleanup()
+                   to wipe the temp workdir.
     """
-    submission = extractor.extract(zip_path)
+    if submission is None:
+        submission = extractor.extract(zip_path)
     checkstyle = checkstyle_runner.run_checkstyle(
         submission.compiler_root, config.checkstyle_jar,
         config.checkstyle_xml, java_exe=config.java_exe,

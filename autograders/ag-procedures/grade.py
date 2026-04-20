@@ -33,10 +33,15 @@ REPO_ROOT = HERE.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from agcore import extractor  # noqa: E402
 from agcore.grader import grade   # noqa: E402  (path tweak above)
 from agcore.report import render, render_error_stub  # noqa: E402
 
 import config  # noqa: E402  -- local config.py next to this script
+
+
+# Lab slug used in the report filename: "<student-slug>-<LAB_SLUG>-report.pdf".
+LAB_SLUG = "procedures"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -62,23 +67,73 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _grade_one(zip_path: Path, out_dir: Path, args) -> Path | None:
+def _report_path(out_dir: Path, student_slug: str,
+                 used_slugs: set[str]) -> Path:
+    """Compose a unique report path of the form
+    "<student-slug>-<LAB_SLUG>-report.pdf" inside out_dir.
+
+    Collisions are possible when two students happen to share a @author
+    name (or when the slug falls back to "student" for missing @authors).
+    We disambiguate by appending "-2", "-3", ... so no report silently
+    overwrites another.
+    """
+    base = f"{student_slug}-{LAB_SLUG}-report"
+    candidate = out_dir / f"{base}.pdf"
+    n = 2
+    while candidate.name in used_slugs or candidate.exists():
+        candidate = out_dir / f"{base}-{n}.pdf"
+        n += 1
+    used_slugs.add(candidate.name)
+    return candidate
+
+
+def _grade_one(zip_path: Path, out_dir: Path, args,
+               used_slugs: set[str]) -> Path | None:
     """Grade a single zip and return the path to the resulting PDF.
 
     This function must ALWAYS produce a PDF (even if grading or rendering
     fails internally) so the teacher has something to look at for every
     submission. Silent drops are worse than ugly reports.
+
+    The output filename is derived from the most common non-teacher @author
+    tag found in the student's .java sources (see extractor.py). Every
+    student's zip is typically named Compiler.zip, so the zip stem alone
+    isn't enough to tell submissions apart.
     """
     cfg = config.build_config(java_exe=args.java, javac_exe=args.javac)
     print(f"[ag-procedures] Grading: {zip_path.name}")
-    out_path = out_dir / f"{zip_path.stem}_procedures_report.pdf"
+
+    # Step 1: extract once so we can peek at @author before running the
+    # (potentially failure-prone) grading pipeline. If extraction itself
+    # fails we fall back to the zip stem for the filename.
+    submission = None
+    try:
+        submission = extractor.extract(zip_path)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"[ag-procedures]   EXTRACTION FAILED: {exc}", file=sys.stderr)
+        fallback_slug = extractor.name_to_filename_slug(zip_path.stem)
+        out_path = _report_path(out_dir, fallback_slug, used_slugs)
+        try:
+            render_error_stub(zip_path, out_path, tb)
+            print(f"[ag-procedures]   -> {out_path}  (error stub)")
+            return out_path
+        except Exception:
+            traceback.print_exc()
+            return None
+
+    student_slug = submission.student_slug
+    out_path = _report_path(out_dir, student_slug, used_slugs)
+    print(f"[ag-procedures]   student: {submission.student_name!r} "
+          f"-> {out_path.name}")
+
     graded = None
     try:
-        graded = grade(zip_path, cfg)
+        graded = grade(zip_path, cfg, submission=submission)
     except Exception as exc:
-        # Extraction / compile orchestration / parsing blew up before we
-        # even had a GradedSubmission. Emit an error-stub PDF so the
-        # teacher sees WHY this submission couldn't be graded.
+        # Compile orchestration / parsing / test execution blew up. Emit
+        # an error-stub PDF so the teacher sees WHY this submission
+        # couldn't be graded.
         tb = traceback.format_exc()
         print(f"[ag-procedures]   GRADING FAILED (emitting stub): {exc}",
               file=sys.stderr)
@@ -89,6 +144,12 @@ def _grade_one(zip_path: Path, out_dir: Path, args) -> Path | None:
         except Exception:
             traceback.print_exc()
             return None
+        finally:
+            if not args.keep_temp:
+                try:
+                    submission.cleanup()
+                except Exception:
+                    pass
 
     try:
         render(graded, out_path)
@@ -129,8 +190,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     failed = 0
+    used_slugs: set[str] = set()
     for z in zips:
-        if _grade_one(z, out_dir, args) is None:
+        if _grade_one(z, out_dir, args, used_slugs) is None:
             failed += 1
     if failed:
         print(f"[ag-procedures] Done. {failed}/{len(zips)} report(s) failed.")
