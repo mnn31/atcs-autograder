@@ -1,0 +1,8 @@
+PROCEDURE print(n);
+WRITELN(n);
+BEGIN
+   n := 3;
+   ignore := print(5);
+   WRITELN(n);
+END;
+.

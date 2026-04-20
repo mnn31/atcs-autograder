@@ -1,0 +1,8 @@
+PROCEDURE add3();
+count := count + 3;
+BEGIN
+   count := 2;
+   ignore := add3();
+   WRITELN(count);
+END;
+.
