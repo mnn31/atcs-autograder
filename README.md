@@ -77,24 +77,37 @@ junk is ignored.
 
 ## What goes in the report
 
-1. **Peer Checkoff Rubric** — one row per rubric line, taken verbatim from
+1. **At-a-glance banner** — six coloured cells at the top of page 1: Overall
+   score, Build, Rubric, Tests, Checkstyle, Docs. Green / amber / red gives
+   the whole verdict without scrolling.
+2. **Peer Checkoff Rubric** — one row per rubric line, taken verbatim from
    the Procedures peer review sheet. Any row where the student didn't earn
-   full credit is shaded red; darker red = more severe.
-2. **Internal Functional Test Cases** — five hidden PASCAL programs that
+   full credit is shaded red; darker red = more severe. Partial-credit rows
+   are tagged **REVIEW** so a human can confirm.
+3. **Internal Functional Test Cases** — ten hidden PASCAL programs that
    exercise simple procedures, argument passing, scope isolation, return
-   values, and recursion. Each failing row shows the exact error (timeout,
-   runtime error, or which output line diverged) — **no student code is
-   reproduced**.
-3. **Documentation Review** — one row per class and per method. Columns
-   show the member, the javadoc summary, and a verdict. Rows flagged
-   `REVIEW` missed the keyword-proximity threshold or are missing required
-   `@param` / `@return` / `@author` / `@version` tags.
-4. **Quick Review** — summary bullets + overall score out of 100, with a
+   values, recursion, parameter shadowing, return values in expressions,
+   nested calls, conditional returns, and double recursion. Each failing
+   row shows the exact error (timeout, runtime error, or which output line
+   diverged) — **no student code is reproduced**.
+4. **Checkstyle Details** — up to 20 concrete violations (file, line, rule,
+   message) so the teacher can point the student at specific fixes instead
+   of just saying "clean this up."
+5. **Documentation Review** — one row per class and per method. Columns
+   show the member, the javadoc summary, the `file:line` location, and a
+   verdict. Rows flagged `REVIEW` missed the keyword-overlap threshold or
+   are missing required `@param` / `@return` / `@author` / `@version` tags.
+6. **Quick Review** — summary bullets + overall score out of 100, with a
    green/amber/red band behind the score.
+7. **Appendix: Hidden Test Suite** (final pages) — for each hidden test,
+   the full PASCAL source, the expected output, and the student's *actual*
+   output side-by-side. Green cell on pass, red cell on fail. This is a
+   teacher-only reference; students don't see it because the zip name is
+   prepended to the report file.
 
-The report is capped well under 10 pages: rubric on page 1, tests on page 2,
-documentation listing + quick review on page 3+ (grows with the number of
-methods, but no class-by-class blowups).
+The report typically runs 10–14 pages: banner + rubric (page 1), tests +
+checkstyle details (page 2), documentation listing + quick review (pages
+3–10), appendix (last 2–3 pages).
 
 ## Layout
 
@@ -126,6 +139,11 @@ autograder-work/
             ├── test03_scope.pas
             ├── test04_return.pas
             ├── test05_recursion.pas
+            ├── test06_shadowing.pas
+            ├── test07_return_in_expr.pas
+            ├── test08_nested_call.pas
+            ├── test09_conditional_return.pas
+            ├── test10_fibonacci.pas
             └── expected.json
 ```
 
@@ -143,11 +161,18 @@ under `autograders/ag-<labname>/`.
 
 ## Tuning the strictness
 
-- Keyword proximity thresholds live in `autograders/ag-procedures/config.py`
-  under `CLASS_KEYWORDS` and `METHOD_KEYWORDS`. Raising a threshold = stricter.
+- Keyword overlap thresholds live in `autograders/ag-procedures/config.py`
+  under `CLASS_KEYWORDS` and `METHOD_KEYWORDS`. Each entry is
+  `(keyword_list, minimum_overlap_count)`. Raising the number = stricter.
+- `MIN_METHOD_DESCRIPTION_WORDS` in `config.py` (default `0`) flags docs
+  whose description prose is below N words. Raise to 3 or 5 if you want
+  to catch one-word "TODO" stubs.
 - The `check_method` call inside `proximity_rule` uses
   `require_return=True`; flip it to `False` on a per-call basis to relax
   `@return` enforcement.
+- `require_pre_post=True` on `check_method` would make `@precondition`
+  and `@postcondition` mandatory — currently off because students often
+  document pre/post in prose and mechanical enforcement is too noisy.
 - Rubric checkers grant partial credit proportionally; tighten by lowering
   the fractions in `_class_methods_tags`, etc.
 
