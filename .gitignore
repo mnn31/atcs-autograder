@@ -6,6 +6,7 @@ venv/
 .DS_Store
 reports/
 sample-reports/
+sample zips/
 *.pdf
 classes_*/
 autograder_*/
