@@ -34,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from agcore.grader import grade   # noqa: E402  (path tweak above)
-from agcore.report import render  # noqa: E402
+from agcore.report import render, render_error_stub  # noqa: E402
 
 import config  # noqa: E402  -- local config.py next to this script
 
@@ -63,24 +63,51 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _grade_one(zip_path: Path, out_dir: Path, args) -> Path | None:
-    """Grade a single zip and return the path to the resulting PDF."""
+    """Grade a single zip and return the path to the resulting PDF.
+
+    This function must ALWAYS produce a PDF (even if grading or rendering
+    fails internally) so the teacher has something to look at for every
+    submission. Silent drops are worse than ugly reports.
+    """
     cfg = config.build_config(java_exe=args.java, javac_exe=args.javac)
     print(f"[ag-procedures] Grading: {zip_path.name}")
+    out_path = out_dir / f"{zip_path.stem}_procedures_report.pdf"
     graded = None
     try:
         graded = grade(zip_path, cfg)
-        out_path = out_dir / f"{zip_path.stem}_procedures_report.pdf"
+    except Exception as exc:
+        # Extraction / compile orchestration / parsing blew up before we
+        # even had a GradedSubmission. Emit an error-stub PDF so the
+        # teacher sees WHY this submission couldn't be graded.
+        tb = traceback.format_exc()
+        print(f"[ag-procedures]   GRADING FAILED (emitting stub): {exc}",
+              file=sys.stderr)
+        try:
+            render_error_stub(zip_path, out_path, tb)
+            print(f"[ag-procedures]   -> {out_path}  (error stub)")
+            return out_path
+        except Exception:
+            traceback.print_exc()
+            return None
+
+    try:
         render(graded, out_path)
+        # render() itself has an internal try/except + fallback, so
+        # reaching this line means we have SOME PDF at out_path -- may
+        # be the rich one or the degraded plain-text dump.
         print(f"[ag-procedures]   -> {out_path}  "
               f"({graded.percent:.1f}%)")
         return out_path
     except Exception as exc:
-        print(f"[ag-procedures]   FAILED: {exc}", file=sys.stderr)
+        print(f"[ag-procedures]   RENDER FAILED: {exc}", file=sys.stderr)
         traceback.print_exc()
         return None
     finally:
         if graded is not None and not args.keep_temp:
-            graded.submission.cleanup()
+            try:
+                graded.submission.cleanup()
+            except Exception:
+                pass
 
 
 def main(argv: list[str] | None = None) -> int:

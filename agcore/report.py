@@ -6,11 +6,18 @@ re-orienting per student.
 
 We intentionally include no student code in the PDF -- only method names,
 their doc summaries, and free-text notes. This matches the lab requirement.
+
+Robustness note: rendering is wrapped in a try/except and falls back to a
+plain-text dump PDF if reportlab throws (e.g. a runaway student test
+produces a million output lines and a cell grows taller than a page). The
+teacher MUST always get a PDF; a missing report would mean they can't even
+tell the autograder ran.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import traceback
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -25,6 +32,17 @@ from reportlab.platypus import (KeepTogether, PageBreak, Paragraph, Spacer,
 from .grader import GradedSubmission, TestOutcome
 from .proximity import ProximityFinding
 from .rubric import GradedItem
+
+
+# Hard caps on text stuffed into PDF cells. A buggy student interpreter can
+# trivially emit hundreds of thousands of output lines (infinite recursion
+# with a WRITELN), and reportlab will refuse to render a cell taller than
+# the page. These caps keep the appendix bounded -- the teacher cares about
+# "it prints zero forever", not the literal millionth zero.
+MAX_APPENDIX_OUTPUT_LINES = 40
+MAX_APPENDIX_SOURCE_LINES = 80
+MAX_APPENDIX_STDERR_LINES = 5
+MAX_PARAGRAPH_CHARS = 4000   # absolute ceiling on any single Paragraph body
 
 
 # Red-severity colour palette: none, minor, medium, major. Deliberately light
@@ -52,11 +70,27 @@ def _shade_for(severity: int) -> Color:
 def render(graded: GradedSubmission, out_path: Path) -> Path:
     """Write the blanksheet PDF for one student.
 
-    Returns the output path so the CLI can print it.
+    Returns the output path so the CLI can print it. If rich rendering
+    blows up (layout errors, reportlab internal issues, whatever), we
+    ALWAYS leave a PDF at out_path -- either the full blanksheet or a
+    plain-text fallback that at least shows the grade + what broke.
     """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    try:
+        return _render_full(graded, out_path)
+    except Exception:
+        # Never lose the report. Capture the traceback so the fallback
+        # PDF tells the teacher exactly what the renderer tripped over.
+        tb = traceback.format_exc()
+        return _render_fallback(graded, out_path, tb)
+
+
+def _render_full(graded: GradedSubmission, out_path: Path) -> Path:
+    """Build the rich, colour-coded blanksheet. May raise on pathological
+    inputs; the caller is responsible for providing a fallback.
+    """
     doc = SimpleDocTemplate(
         str(out_path), pagesize=LETTER,
         leftMargin=0.55 * inch, rightMargin=0.55 * inch,
@@ -80,6 +114,177 @@ def render(graded: GradedSubmission, out_path: Path) -> Path:
     _add_hidden_test_reference(story, graded, styles)
 
     doc.build(story)
+    return out_path
+
+
+def _render_fallback(graded: GradedSubmission, out_path: Path,
+                     traceback_text: str) -> Path:
+    """Plain-text dump PDF used when the rich renderer throws.
+
+    Everything here is built out of short Paragraphs with aggressive
+    truncation so the same pathological input that killed the full
+    renderer cannot kill the fallback. If THIS also throws, we write a
+    raw .txt sidecar so the teacher still has *something*.
+    """
+    try:
+        doc = SimpleDocTemplate(
+            str(out_path), pagesize=LETTER,
+            leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+            topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+            title=f"Autograder Report (FALLBACK) - "
+                  f"{graded.submission.student_name}",
+        )
+        styles = _build_styles()
+        story: List = []
+
+        story.append(Paragraph(
+            "<b>ATCS Compilers Autograder &mdash; Degraded Report</b>",
+            styles["h1"]))
+        story.append(Paragraph(
+            "The rich renderer could not build this report (see traceback "
+            "below). This is a best-effort plain-text dump so you still have "
+            "the grade and can diagnose why rendering failed. Re-running "
+            "after capping runaway student output usually resolves it.",
+            styles["body"]))
+        story.append(Spacer(1, 6))
+
+        # Identity + overall score -- cheapest thing to compute, most
+        # important thing for the teacher to see.
+        _safe_append(story, styles, "h2", "Submission")
+        _safe_append(story, styles, "body",
+                     f"Student (from zip): {graded.submission.student_name}")
+        _safe_append(story, styles, "body",
+                     f"Lab: {graded.config.lab_name}")
+        _safe_append(story, styles, "body",
+                     f"Graded on: {_dt.datetime.now():%Y-%m-%d %H:%M}")
+        try:
+            score_line = (f"<b>Overall score:</b> {graded.total_earned:.1f} / "
+                          f"{graded.total_possible:.1f} "
+                          f"({graded.percent:.1f}%)")
+        except Exception:
+            score_line = "<b>Overall score:</b> unavailable"
+        story.append(Paragraph(score_line, styles["body"]))
+        story.append(Spacer(1, 4))
+
+        # Compile / rubric / test one-liners -- all wrapped so a missing
+        # attribute can't abort the fallback.
+        _safe_append(story, styles, "h2", "Summary")
+        try:
+            _safe_append(story, styles, "body",
+                         "Build: " + ("compiled"
+                                      if graded.compile_result.success
+                                      else "COMPILE FAIL"))
+        except Exception:
+            pass
+        try:
+            for gi in graded.graded_items:
+                _safe_append(
+                    story, styles, "small",
+                    f"[{gi.earned:.1f}/{gi.item.points:.1f}] "
+                    f"{gi.item.description} {('-- ' + gi.notes) if gi.notes else ''}"
+                )
+        except Exception:
+            pass
+
+        _safe_append(story, styles, "h2", "Test outcomes")
+        try:
+            for t in graded.test_outcomes:
+                verdict = "PASS" if t.passed else "FAIL"
+                reason = (t.error or "").strip() or ""
+                _safe_append(
+                    story, styles, "small",
+                    f"[{verdict}] {t.case.name} -- "
+                    f"{_clip(t.case.description, 120)}"
+                    + (f" :: {_clip(reason, 120)}" if reason else "")
+                )
+        except Exception:
+            pass
+
+        _safe_append(story, styles, "h2", "Renderer traceback")
+        story.append(Paragraph(
+            _escape(_clip(traceback_text, 2000)).replace("\n", "<br/>"),
+            styles["mono"]))
+
+        doc.build(story)
+        return out_path
+    except Exception:
+        # Last-ditch: write a raw text sidecar so the teacher still has a
+        # file to open. We change the extension so the original failed
+        # path isn't silently overwritten with garbage.
+        try:
+            txt_path = out_path.with_suffix(".FAILED.txt")
+            txt_path.write_text(
+                f"Autograder rendering failed for "
+                f"{graded.submission.student_name}.\n\n"
+                f"Traceback:\n{traceback_text}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        return out_path
+
+
+def _safe_append(story: List, styles: dict, style_name: str,
+                 text: str) -> None:
+    """Append a Paragraph, swallowing any reportlab parsing error. Used by
+    the fallback renderer where we cannot afford an exception.
+    """
+    try:
+        story.append(Paragraph(_escape(_clip(text, MAX_PARAGRAPH_CHARS)),
+                               styles[style_name]))
+    except Exception:
+        # Give up on this row; the fallback's job is best-effort, not
+        # correctness.
+        pass
+
+
+def render_error_stub(zip_path: Path, out_path: Path,
+                      traceback_text: str) -> Path:
+    """PDF generated when grading itself throws before a GradedSubmission
+    can be built (e.g. the zip is corrupt or the Compiler directory is
+    missing). Keeps the contract: every student zip produces a PDF.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(
+        str(out_path), pagesize=LETTER,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        title=f"Autograder Report (ERROR) - {Path(zip_path).stem}",
+    )
+    styles = _build_styles()
+    story: List = []
+    story.append(Paragraph(
+        "<b>ATCS Compilers Autograder &mdash; Grading Failed</b>",
+        styles["h1"]))
+    story.append(Paragraph(
+        f"<b>Zip:</b> {_escape(str(zip_path))}", styles["body"]))
+    story.append(Paragraph(
+        f"<b>Graded on:</b> {_dt.datetime.now():%Y-%m-%d %H:%M}",
+        styles["body"]))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        "The autograder could not complete grading for this submission. "
+        "Common causes: the zip is corrupt, the Compiler directory is "
+        "missing or nested unexpectedly, a required file is absent, or a "
+        "plugin stage (extractor / checkstyle / parser) crashed.",
+        styles["body"]))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph("<b>Traceback</b>", styles["h2"]))
+    story.append(Paragraph(
+        _escape(_clip(traceback_text, 3000)).replace("\n", "<br/>"),
+        styles["mono"]))
+    try:
+        doc.build(story)
+    except Exception:
+        # Absolutely last resort: a raw text sidecar.
+        try:
+            out_path.with_suffix(".FAILED.txt").write_text(
+                f"Autograder failed on {zip_path}.\n\n{traceback_text}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
     return out_path
 
 
@@ -694,13 +899,15 @@ def _add_hidden_test_reference(story: List, graded: GradedSubmission,
                 encoding="utf-8", errors="replace")
         except OSError as exc:
             source = f"(could not read source: {exc})"
+        source = _cap_lines(source, MAX_APPENDIX_SOURCE_LINES)
         expected_text = "\n".join(case.expected_stdout) \
             if case.expected_stdout else "(no output expected)"
+        expected_text = _cap_lines(expected_text, MAX_APPENDIX_OUTPUT_LINES)
 
         # Actual output block: show the lines the student's interpreter
-        # produced. If the test errored / timed out, show the high-level
-        # reason and a short stderr snippet instead -- otherwise the
-        # teacher has no way to tell why a FAIL happened from this page.
+        # produced. Capped hard so a runaway student interpreter
+        # (infinite recursion with WRITELN) can't produce a Paragraph
+        # taller than a page and kill the renderer.
         actual_lines = list(outcome.actual_stdout)
         actual_detail = ""
         if not actual_lines and outcome.error:
@@ -708,9 +915,10 @@ def _add_hidden_test_reference(story: List, graded: GradedSubmission,
         elif not actual_lines:
             actual_detail = "(no output)"
         actual_text = "\n".join(actual_lines) if actual_lines else actual_detail
+        actual_text = _cap_lines(actual_text, MAX_APPENDIX_OUTPUT_LINES)
         if outcome.stderr and not outcome.passed:
             actual_text = actual_text + "\n-- stderr --\n" + \
-                _first_n_lines_plain(outcome.stderr, 4)
+                _first_n_lines_plain(outcome.stderr, MAX_APPENDIX_STDERR_LINES)
 
         # Colour the actual-output cell green on PASS, red on FAIL so the
         # teacher can eyeball agreement at a glance.
@@ -766,3 +974,24 @@ def _first_n_lines_plain(text: str, n: int) -> str:
     if len(lines) <= n:
         return "\n".join(lines)
     return "\n".join(lines[:n]) + "\n[... truncated ...]"
+
+
+def _cap_lines(text: str, max_lines: int) -> str:
+    """Truncate a multi-line string to at most max_lines, appending a
+    marker that reports how many lines were dropped. Also caps total
+    character count so a single very long line can't blow things up.
+    """
+    if text is None:
+        return ""
+    lines = text.splitlines()
+    dropped = 0
+    if len(lines) > max_lines:
+        dropped = len(lines) - max_lines
+        lines = lines[:max_lines]
+    out = "\n".join(lines)
+    if dropped:
+        out = out + f"\n[... truncated: {dropped} more line(s) not shown ...]"
+    if len(out) > MAX_PARAGRAPH_CHARS:
+        out = (out[: MAX_PARAGRAPH_CHARS - 40].rstrip()
+               + "\n[... truncated: remainder too long to render ...]")
+    return out
