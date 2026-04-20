@@ -607,10 +607,15 @@ def _add_checkstyle_details(story: List, graded: GradedSubmission,
         ])
     table = Table(rows, colWidths=[0.3 * inch, 1.8 * inch, 0.5 * inch,
                                    1.5 * inch, 3.4 * inch])
+    # Shade every data row (1..end) a light red so the section pops when
+    # scrolling; the teacher can then zero in on the Rule / Message cells
+    # without reading the header. Header keeps its grey background.
+    cs_row_bg = _shade_for(1)   # light pink, matches rubric "minor" tint
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.3, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BACKGROUND", (0, 0), (-1, 0), Color(0.85, 0.85, 0.85)),
+        ("BACKGROUND", (0, 1), (-1, -1), cs_row_bg),
     ]))
     story.append(table)
 

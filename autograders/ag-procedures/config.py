@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from typing import Callable, List, Sequence
 
+from agcore import java_runner
 from agcore.grader import GradedSubmission, LabConfig, TestCase
 from agcore.javadoc_parser import ClassRecord, MethodRecord
 from agcore.proximity import ProximityFinding, check_class, check_method
@@ -312,39 +313,81 @@ def _procdecl_params_and_body(g: GradedSubmission) -> CheckResult:
 
 
 def _proccall_extends_and_eval(g: GradedSubmission) -> CheckResult:
+    """Score ProcedureCall's eval() on BOTH structure and behaviour.
+
+    Previously this was a pure grep: if the source contained the right
+    keywords, it got the points. That gave surprisingly high scores to a
+    stub eval() that merely called env.getProcedure and then ignored
+    parameters -- semantically broken but structurally passable.
+
+    New approach: award up to 6 pts on source structure, then apply a
+    behavioural cap based on how many of the eval-sensitive hidden tests
+    actually pass. If none pass (and the code compiled), eval is
+    clearly wrong no matter what the source says; we cap the rubric
+    score so the grep can't inflate it.
+    """
     cls = g.class_by_name("ProcedureCall")
     if cls is None:
         return CheckResult(earned=0, notes="class missing",
                            severity=SEVERITY_MAJOR)
     score = 0.0
     notes: List[str] = []
+    # -- Structural sub-score, up to 6 pts. Spread the credit so no single
+    # keyword can clear more than 2 pts by itself.
     if cls.superclass == "Expression":
-        score += 3
+        score += 2
     else:
         notes.append(f"does not extend Expression (extends {cls.superclass!r})")
     eval_m = g.method("ProcedureCall", "eval")
     if eval_m is None:
         notes.append("no eval method")
     else:
-        score += 2
+        score += 1
         src = _class_source(g, "ProcedureCall") or ""
-        # Check the key behaviours mentioned in the rubric.
         if "getProcedure" in src:
             score += 1
         else:
             notes.append("eval does not call getProcedure on the env")
         if "globalScope" in src or "getGlobal" in src or "new Environment" in src:
-            score += 2
+            score += 1
         else:
             notes.append("no child environment created off the global one")
         if "declareVariable" in src or "setVariable" in src:
             score += 1
         else:
             notes.append("parameters never bound via declare/setVariable")
-        if ".exec(" in src or ".eval(" in src:
-            score += 1
-        else:
-            notes.append("body is never exec'd / args never eval'd")
+
+    # -- Behavioural sub-score, up to 4 pts. Only counted if the project
+    # compiled; otherwise we defer to the compile-failure rubric row and
+    # don't double-penalise here.
+    eval_sensitive = {
+        "test04_return", "test05_recursion", "test07_return_in_expr",
+        "test08_nested_call", "test09_conditional_return",
+        "test10_fibonacci",
+    }
+    outcomes = [t for t in g.test_outcomes
+                if t.case.name in eval_sensitive]
+    if g.compile_result.success and outcomes:
+        passed = sum(1 for t in outcomes if t.passed)
+        total = len(outcomes)
+        behavioural = round(4.0 * passed / total, 1)
+        score += behavioural
+        if passed < total:
+            notes.append(
+                f"eval-sensitive tests: only {passed}/{total} pass "
+                f"(procedure calls / returns don't behave correctly)"
+            )
+        # When ZERO eval-sensitive tests pass the source grep is
+        # coincidental: cap the whole rubric row at 4 so a well-
+        # keyword-stuffed but broken eval can't scrape >50%.
+        if passed == 0:
+            cap = 4.0
+            if score > cap:
+                notes.append(f"no eval-sensitive tests passed; "
+                             f"structural score capped at {cap}/10")
+                score = cap
+    elif not g.compile_result.success:
+        notes.append("compile failed; behavioural sub-score not evaluated")
     severity = 0 if score >= 10 else (SEVERITY_MEDIUM if score >= 5
                                       else SEVERITY_MAJOR)
     return CheckResult(earned=round(score, 1),
@@ -471,22 +514,73 @@ def _parser_procedure_and_factor(g: GradedSubmission) -> CheckResult:
                        notes="; ".join(notes), severity=severity)
 
 
-def _testing_proc_tests(g: GradedSubmission) -> CheckResult:
-    """Rubric item: 'Works well on parserTest7 and parserTest8' -- we map this
-    onto our hidden test suite plus compile success."""
-    total = len(g.test_outcomes) or 1
-    passed = sum(1 for t in g.test_outcomes if t.passed)
-    earned = round(10 * passed / total, 1)
-    notes = (f"{passed}/{total} internal tests passed")
+def _testing_parsertest_7_and_8(g: GradedSubmission) -> CheckResult:
+    """Rubric item: 'Works well on parserTest7 and parserTest8'.
+
+    These files are part of the LAB INSTRUCTIONS -- the teacher gives
+    students parserTest7.txt and parserTest8.txt to validate their work.
+    They are NOT the autograder's hidden test suite. A student who
+    didn't bring those files into their zip loses this rubric point
+    entirely, which is the peer-review rule.
+
+    Scoring (5 pts per file, total 10):
+      * 2 pts: file is present somewhere in the Compiler/ tree
+      * 3 pts: file runs through the student's parser without a
+               runtime error, crash, or timeout
+
+    We can't judge output correctness (the expected output isn't in the
+    repo), so this is only a "does it at least execute" check. A human
+    still has to skim the actual output if the teacher wants more.
+    """
     if not g.compile_result.success:
-        return CheckResult(earned=0, notes="compile failure blocks all tests",
-                           severity=SEVERITY_MAJOR)
-    severity = 0 if passed == total else (SEVERITY_MINOR
-                                          if passed >= total - 1
-                                          else SEVERITY_MEDIUM
-                                          if passed >= total // 2
-                                          else SEVERITY_MAJOR)
-    return CheckResult(earned=earned, notes=notes, severity=severity)
+        return CheckResult(
+            earned=0,
+            notes="compile failure blocks the parserTest7/8 run",
+            severity=SEVERITY_MAJOR,
+        )
+
+    compiler_root = g.submission.compiler_root
+    expected_files = ("parserTest7.txt", "parserTest8.txt")
+    score = 0.0
+    notes: List[str] = []
+    for fname in expected_files:
+        matches = list(compiler_root.rglob(fname))
+        if not matches:
+            notes.append(f"{fname} not found in the submission")
+            continue
+        score += 2.0  # presence credit
+        test_path = matches[0]
+        try:
+            run = java_runner.run_parser(
+                compiler_root=compiler_root,
+                classes_dir=g.compile_result.classes_dir,
+                test_file=test_path,
+                java_exe=g.config.java_exe,
+                timeout=30,
+                stdin_text=None,
+                main_class=g.config.main_class,
+            )
+        except Exception as exc:   # defensive; must not kill the rubric
+            notes.append(f"{fname} runner raised: {exc}")
+            continue
+        if run.timed_out:
+            notes.append(f"{fname} timed out (infinite loop?)")
+            continue
+        if run.error:
+            notes.append(f"{fname} run error: {run.error}")
+            continue
+        # A non-empty stderr is a soft failure -- execution completed but
+        # the student's code printed errors. Half credit for that arm.
+        if run.stderr.strip():
+            score += 1.0
+            notes.append(f"{fname} ran but wrote to stderr")
+            continue
+        score += 3.0
+    score = round(score, 1)
+    severity = 0 if score >= 10 else (SEVERITY_MEDIUM if score >= 5
+                                      else SEVERITY_MAJOR)
+    return CheckResult(earned=score, notes="; ".join(notes),
+                       severity=severity)
 
 
 def _class_source(g: GradedSubmission, class_name: str) -> str | None:
@@ -616,9 +710,10 @@ RUBRIC: Sequence[RubricItem] = (
     RubricItem(
         code="testing",
         description="Testing: works well on parserTest7 and parserTest8 "
-                    "(mapped to the hidden Procedures suite).",
+                    "(lab-provided test files; student must include them "
+                    "in their submission).",
         points=10,
-        checker=_testing_proc_tests,
+        checker=_testing_parsertest_7_and_8,
         category="Testing",
     ),
 )
