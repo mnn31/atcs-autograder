@@ -118,12 +118,14 @@ def proximity_rule(graded: GradedSubmission) -> List[ProximityFinding]:
             continue
         findings.append(check_method(
             method, kws, threshold,
-            require_pre_post=True,
             min_description_words=MIN_METHOD_DESCRIPTION_WORDS,
         ))
 
-    # Also audit every other method: must have javadoc, the right @-tags
-    # (including pre/post), and a non-trivial description.
+    # Audit every other method: must have a javadoc, the right @param/@return
+    # tags, and a non-trivial description. We deliberately do NOT require
+    # @precondition/@postcondition here -- students often document pre/post
+    # in prose or skip them for trivial getters, and mechanical enforcement
+    # produces too many false-positive REVIEWs for a teacher to skim.
     audited = {(cls_n, m_n) for (cls_n, m_n) in METHOD_KEYWORDS}
     for cls in graded.classes:
         for m in cls.methods:
@@ -132,7 +134,6 @@ def proximity_rule(graded: GradedSubmission) -> List[ProximityFinding]:
             findings.append(check_method(
                 m, [], 0,
                 require_return=True,
-                require_pre_post=True,
                 min_description_words=MIN_METHOD_DESCRIPTION_WORDS,
             ))
     return findings
