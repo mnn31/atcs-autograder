@@ -76,6 +76,8 @@ def render(graded: GradedSubmission, out_path: Path) -> Path:
     story.append(PageBreak())
     _add_doc_listing(story, graded, styles)
     _add_quick_review(story, graded, styles)
+    story.append(PageBreak())
+    _add_hidden_test_reference(story, graded, styles)
 
     doc.build(story)
     return out_path
@@ -655,3 +657,76 @@ def _escape(text: str) -> str:
     return (text.replace("&", "&amp;")
                 .replace("<", "&lt;")
                 .replace(">", "&gt;"))
+
+
+def _add_hidden_test_reference(story: List, graded: GradedSubmission,
+                               styles: dict) -> None:
+    """Teacher-only appendix: the actual hidden test suite, printed in full.
+
+    Each test contributes one block with its name, description, PASCAL source
+    (in monospace), and the exact expected stdout. This lets the teacher see
+    why a particular row in the Functional Test Cases table is failing
+    without having to dig through the autograder repo. The appendix is
+    rendered after a page break so a student-sized report stops cleanly at
+    the Quick Review summary.
+    """
+    story.append(Paragraph("Appendix: Hidden Test Suite (teacher reference)",
+                           styles["h2"]))
+    story.append(Paragraph(
+        "Below is the full content of every PASCAL test case the autograder "
+        "runs. These are deliberately kept out of the student-facing PDF "
+        "sections; this page exists so the teacher can reproduce a failure "
+        "by hand or by running the .pas file through a known-good compiler.",
+        styles["small"],
+    ))
+    story.append(Spacer(1, 6))
+
+    if not graded.test_outcomes:
+        story.append(Paragraph("(no hidden tests are configured for this lab)",
+                               styles["small"]))
+        return
+
+    for idx, outcome in enumerate(graded.test_outcomes, start=1):
+        case = outcome.case
+        verdict = "PASS" if outcome.passed else "FAIL"
+        try:
+            source = Path(case.source_path).read_text(
+                encoding="utf-8", errors="replace")
+        except OSError as exc:
+            source = f"(could not read source: {exc})"
+        expected_text = "\n".join(case.expected_stdout) \
+            if case.expected_stdout else "(no output expected)"
+
+        header = (f"<b>Test {idx}: {_escape(case.name)}</b> "
+                  f"&mdash; {_escape(case.description)} "
+                  f"[<b>{verdict}</b>]")
+        source_mono = _escape(source).replace("\n", "<br/>")
+        expected_mono = _escape(expected_text).replace("\n", "<br/>")
+
+        block = Table(
+            [
+                [Paragraph(header, styles["body"])],
+                [Paragraph("<b>Source:</b>", styles["small"])],
+                [Paragraph(source_mono, styles["mono"])],
+                [Paragraph("<b>Expected output:</b>", styles["small"])],
+                [Paragraph(expected_mono, styles["mono"])],
+            ],
+            colWidths=[7.4 * inch],
+            style=TableStyle([
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+                ("INNERGRID", (0, 0), (-1, -1), 0.2, colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 0),
+                 Color(0.90, 0.90, 0.90)),
+                ("BACKGROUND", (0, 2), (-1, 2),
+                 Color(0.97, 0.97, 0.94)),
+                ("BACKGROUND", (0, 4), (-1, 4),
+                 Color(0.94, 0.97, 0.94)),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ]),
+        )
+        story.append(KeepTogether(block))
+        story.append(Spacer(1, 8))

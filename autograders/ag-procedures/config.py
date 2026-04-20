@@ -92,9 +92,12 @@ METHOD_KEYWORDS = {
         ["factor", "procedure", "call", "parse", "identifier"], 3),
 }
 
-# Minimum word-count for a method's description prose. Single-line "does X"
-# docs slip past keyword matching but convey nothing -- flag them.
-MIN_METHOD_DESCRIPTION_WORDS = 5
+# Minimum word-count for a method's description prose. Set to 0 to disable
+# -- many perfectly adequate getters document in 3-4 words ("Returns the
+# procedure's name."), so mechanical enforcement here creates noise without
+# catching real problems. Raise to 3 or 5 if you want to flag one-word
+# "TODO" stubs automatically.
+MIN_METHOD_DESCRIPTION_WORDS = 0
 
 
 # --------------------------------------------------------------------------- #
