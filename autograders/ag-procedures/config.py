@@ -41,15 +41,18 @@ TESTS_DIR = AG_ROOT / "tests"
 
 CLASS_KEYWORDS = {
     "ProcedureDeclaration": (
-        ["procedure", "declaration", "parameter", "body", "name"], 2),
+        ["procedure", "declaration", "parameter", "body", "name"], 3),
     "ProcedureCall": (
-        ["procedure", "call", "argument", "environment", "evaluate", "return"], 2),
+        ["procedure", "call", "argument", "environment", "evaluate",
+         "return"], 3),
     "Program": (
-        ["program", "procedure", "main", "statement", "root", "ast"], 2),
+        ["program", "procedure", "main", "statement", "root", "ast"], 3),
     "Environment": (
-        ["environment", "variable", "procedure", "scope", "parent", "global"], 2),
+        ["environment", "variable", "procedure", "scope", "parent",
+         "global"], 3),
     "Parser": (
-        ["parser", "token", "statement", "expression", "procedure", "recursive"], 2),
+        ["parser", "token", "statement", "expression", "procedure",
+         "recursive"], 3),
 }
 
 # Per-method keyword packs for the most rubric-critical methods. Getters and
@@ -57,36 +60,41 @@ CLASS_KEYWORDS = {
 METHOD_KEYWORDS = {
     ("ProcedureDeclaration", "exec"): (
         ["register", "procedure", "environment", "declaration", "symbol",
-         "table", "name"], 2),
+         "table", "name"], 3),
     ("ProcedureDeclaration", "ProcedureDeclaration"): (   # constructor
-        ["procedure", "declaration", "parameter", "body", "name"], 2),
+        ["procedure", "declaration", "parameter", "body", "name"], 3),
     ("ProcedureCall", "eval"): (
         ["evaluate", "procedure", "call", "argument", "environment",
-         "parameter", "return", "body"], 3),
+         "parameter", "return", "body"], 4),
     ("ProcedureCall", "ProcedureCall"): (                   # constructor
         ["procedure", "call", "argument", "expression"], 2),
     ("Program", "exec"): (
         ["procedure", "declaration", "main", "statement", "environment",
-         "register"], 2),
+         "register"], 3),
     ("Program", "Program"): (
-        ["program", "procedure", "main", "statement"], 2),
+        ["program", "procedure", "main", "statement"], 3),
     ("Environment", "declareVariable"): (
-        ["declare", "variable", "current", "local", "environment", "scope"], 2),
+        ["declare", "variable", "current", "local", "environment", "scope"],
+        3),
     ("Environment", "setVariable"): (
-        ["set", "variable", "global", "local", "scope", "parent"], 2),
+        ["set", "variable", "global", "local", "scope", "parent"], 3),
     ("Environment", "getVariable"): (
-        ["variable", "lookup", "parent", "global", "return", "scope"], 2),
+        ["variable", "lookup", "parent", "global", "return", "scope"], 3),
     ("Environment", "setProcedure"): (
-        ["set", "procedure", "global", "environment"], 2),
+        ["set", "procedure", "global", "environment"], 3),
     ("Environment", "getProcedure"): (
         ["procedure", "lookup", "global", "return"], 2),
     ("Parser", "parseProgram"): (
-        ["parse", "program", "procedure", "declaration", "statement"], 3),
+        ["parse", "program", "procedure", "declaration", "statement"], 4),
     ("Parser", "parseProcedureDeclaration"): (
-        ["parse", "procedure", "declaration", "parameter", "body"], 3),
+        ["parse", "procedure", "declaration", "parameter", "body"], 4),
     ("Parser", "parseFactor"): (
-        ["factor", "procedure", "call", "parse", "identifier"], 2),
+        ["factor", "procedure", "call", "parse", "identifier"], 3),
 }
+
+# Minimum word-count for a method's description prose. Single-line "does X"
+# docs slip past keyword matching but convey nothing -- flag them.
+MIN_METHOD_DESCRIPTION_WORDS = 5
 
 
 # --------------------------------------------------------------------------- #
@@ -108,18 +116,25 @@ def proximity_rule(graded: GradedSubmission) -> List[ProximityFinding]:
         method = graded.method(cls_name, m_name)
         if method is None:
             continue
-        findings.append(check_method(method, kws, threshold))
+        findings.append(check_method(
+            method, kws, threshold,
+            require_pre_post=True,
+            min_description_words=MIN_METHOD_DESCRIPTION_WORDS,
+        ))
 
-    # Also lightly audit every other method: must have javadoc + @-tags.
+    # Also audit every other method: must have javadoc, the right @-tags
+    # (including pre/post), and a non-trivial description.
     audited = {(cls_n, m_n) for (cls_n, m_n) in METHOD_KEYWORDS}
     for cls in graded.classes:
         for m in cls.methods:
             if (cls.name, m.method_name) in audited:
                 continue
-            # Minimum bar: "has a javadoc, has the right tags". Empty keyword
-            # list + threshold 0 means the keyword pass auto-passes, so the
-            # only way to fail is missing javadoc or missing tags.
-            findings.append(check_method(m, [], 0, require_return=True))
+            findings.append(check_method(
+                m, [], 0,
+                require_return=True,
+                require_pre_post=True,
+                min_description_words=MIN_METHOD_DESCRIPTION_WORDS,
+            ))
     return findings
 
 

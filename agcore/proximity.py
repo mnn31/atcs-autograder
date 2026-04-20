@@ -78,6 +78,8 @@ def check_method(
     expected: Sequence[str],
     threshold: int,
     require_return: bool = True,
+    require_pre_post: bool = False,
+    min_description_words: int = 0,
 ) -> ProximityFinding:
     """Score one method's javadoc against an expected keyword set.
 
@@ -87,6 +89,10 @@ def check_method(
         threshold: minimum number of keywords (post-stem) required.
         require_return: if True and the method's return type isn't void, an
             @return tag is required.
+        require_pre_post: if True, @precondition and @postcondition tags
+            must both be present. The peer review rubric calls for these.
+        min_description_words: if >0, flag docs whose description prose
+            falls below this many words as shallow.
 
     Returns a ProximityFinding ready to drop into the report.
     """
@@ -97,14 +103,16 @@ def check_method(
             target=target, file=method.file, line=method.line,
             expected=list(expected), matched=[], missing=list(expected_stems),
             threshold=threshold, passed=False,
-            missing_tags=_expected_tags(method, require_return),
+            missing_tags=_expected_tags(method, require_return,
+                                        require_pre_post),
             note="missing javadoc",
         )
     return _score_doc(method.javadoc, target, method.file, method.line,
                       expected_stems, list(expected), threshold,
-                      _expected_tags(method, require_return),
+                      _expected_tags(method, require_return, require_pre_post),
                       method_params=method.params, method_ret=method.return_type,
-                      require_return=require_return)
+                      require_return=require_return,
+                      min_description_words=min_description_words)
 
 
 def check_class(
@@ -131,11 +139,15 @@ def check_class(
                       method_ret="", require_return=False)
 
 
-def _expected_tags(method: MethodRecord, require_return: bool) -> List[str]:
+def _expected_tags(method: MethodRecord, require_return: bool,
+                   require_pre_post: bool = False) -> List[str]:
     """Tags that SHOULD appear in this method's javadoc given its signature.
 
     Constructors (detected by method_name == class_name) never require
-    @return -- they don't have one.
+    @return -- they don't have one. When require_pre_post is True, both
+    @precondition and @postcondition must also be present; the peer review
+    rubric calls for "@param, @return, pre/post, description" on every
+    method.
     """
     tags: List[str] = []
     if method.params:
@@ -144,6 +156,8 @@ def _expected_tags(method: MethodRecord, require_return: bool) -> List[str]:
     if (require_return and not is_ctor
             and method.return_type not in ("void", "")):
         tags.append("@return")
+    if require_pre_post:
+        tags.extend(["@precondition", "@postcondition"])
     return tags
 
 
@@ -159,6 +173,7 @@ def _score_doc(
     method_params: list[str] | None,
     method_ret: str,
     require_return: bool,
+    min_description_words: int = 0,
 ) -> ProximityFinding:
     text_tokens = set(_normalise(javadoc.plain_text()))
     matched = [kw for kw in expected_stems if kw in text_tokens]
@@ -177,15 +192,27 @@ def _score_doc(
         else:
             available_tags.pop(found_idx)
 
+    # Description prose depth: count words in the description only; tag
+    # text is bookkeeping not narrative. A single-word or blank description
+    # is not a real javadoc.
+    description_words = len(javadoc.description.split()) if javadoc.description \
+        else 0
+    shallow = (min_description_words > 0
+               and description_words < min_description_words)
+
     # Even if the tag count matches, a @param with a bogus arg name is still
     # "present"; we do not (yet) cross-check arg names. This keeps us lenient.
-    passed = len(matched) >= threshold and not remaining_required
+    passed = (len(matched) >= threshold and not remaining_required
+              and not shallow)
     note = ""
     if not passed:
         if len(matched) < threshold:
             note = f"only {len(matched)}/{threshold} keywords matched"
         elif remaining_required:
             note = f"missing tags: {', '.join(remaining_required)}"
+        elif shallow:
+            note = (f"description only {description_words} word(s) "
+                    f"(min {min_description_words})")
     return ProximityFinding(
         target=target, file=file, line=line,
         expected=expected_original, matched=matched, missing=missing,

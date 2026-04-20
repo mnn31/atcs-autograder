@@ -67,9 +67,12 @@ def render(graded: GradedSubmission, out_path: Path) -> Path:
     story: List = []
 
     _add_header(story, graded, styles)
+    _add_at_a_glance(story, graded, styles)
     _add_rubric_table(story, graded, styles)
     story.append(PageBreak())
     _add_test_cases(story, graded, styles)
+    story.append(Spacer(1, 12))
+    _add_checkstyle_details(story, graded, styles)
     story.append(PageBreak())
     _add_doc_listing(story, graded, styles)
     _add_quick_review(story, graded, styles)
@@ -130,13 +133,105 @@ def _add_header(story: List, graded: GradedSubmission, styles: dict) -> None:
     story.append(Spacer(1, 6))
 
 
+def _add_at_a_glance(story: List, graded: GradedSubmission,
+                     styles: dict) -> None:
+    """Top-of-page-1 four-cell banner so a teacher sees the verdict before
+    scrolling. Each cell is coloured by severity of its section.
+    """
+    rubric_fails = sum(1 for gi in graded.graded_items
+                       if gi.earned < gi.item.points)
+    test_total = len(graded.test_outcomes)
+    test_passed = sum(1 for t in graded.test_outcomes if t.passed)
+    cs_total = len(graded.checkstyle.violations)
+    member_total = sum(1 + len(c.methods) for c in graded.classes)
+    doc_fails = sum(1 for f in graded.proximity if not f.passed)
+
+    compile_ok = graded.compile_result.success
+    percent = graded.percent
+
+    # Shared palette -- green / amber / red / white (white == neutral / no data).
+    green = Color(0.80, 0.94, 0.80)
+    amber = Color(0.99, 0.93, 0.78)
+    red_c = Color(1.00, 0.78, 0.76)
+    grey = Color(0.93, 0.93, 0.93)
+
+    def cell(title: str, value: str, bg: Color):
+        return Table(
+            [[Paragraph(f"<b>{title}</b>", styles["small"])],
+             [Paragraph(f"<b>{value}</b>", styles["body"])]],
+            colWidths=[1.75 * inch],
+            style=TableStyle([
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.black),
+                ("BACKGROUND", (0, 0), (-1, -1), bg),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]),
+        )
+
+    # Overall score cell (wins real estate over the four sub-badges).
+    score_bg = (green if percent >= 90 else amber if percent >= 75 else red_c)
+    score_cell = cell("Overall", f"{percent:.1f}%", score_bg)
+
+    compile_bg = green if compile_ok else red_c
+    compile_val = "compiled" if compile_ok else "COMPILE FAIL"
+    compile_cell = cell("Build", compile_val, compile_bg)
+
+    rubric_bg = (green if rubric_fails == 0
+                 else amber if rubric_fails <= 2 else red_c)
+    rubric_val = (f"{len(graded.graded_items) - rubric_fails}/"
+                  f"{len(graded.graded_items)} full-credit")
+    rubric_cell = cell("Rubric", rubric_val, rubric_bg)
+
+    if test_total == 0:
+        test_bg, test_val = grey, "no tests"
+    elif test_passed == test_total:
+        test_bg, test_val = green, f"{test_passed}/{test_total} pass"
+    elif test_passed >= test_total // 2:
+        test_bg, test_val = amber, f"{test_passed}/{test_total} pass"
+    else:
+        test_bg, test_val = red_c, f"{test_passed}/{test_total} pass"
+    test_cell = cell("Tests", test_val, test_bg)
+
+    cs_bg = (green if cs_total == 0
+             else amber if cs_total <= 5 else red_c)
+    cs_val = "clean" if cs_total == 0 else f"{cs_total} issue(s)"
+    cs_cell = cell("Checkstyle", cs_val, cs_bg)
+
+    docs_bg = (green if doc_fails == 0
+               else amber if doc_fails <= 3 else red_c)
+    docs_val = (f"{member_total - doc_fails}/{member_total} ok"
+                if member_total else "no docs")
+    docs_cell = cell("Docs", docs_val, docs_bg)
+
+    banner = Table(
+        [[score_cell, compile_cell, rubric_cell, test_cell, cs_cell,
+          docs_cell]],
+        colWidths=[1.25 * inch] * 6,
+        style=TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]),
+    )
+    story.append(banner)
+    story.append(Spacer(1, 10))
+
+
 def _add_rubric_table(story: List, graded: GradedSubmission,
                       styles: dict) -> None:
+    rubric_fails = sum(1 for gi in graded.graded_items
+                       if gi.earned < gi.item.points)
     story.append(Paragraph("Peer Checkoff Rubric", styles["h2"]))
     story.append(Paragraph(
+        f"{len(graded.graded_items)} items &middot; "
+        f"{rubric_fails} partial / missed. "
         "Rows in red were NOT awarded full credit. Darker red = more "
-        "severe / more common issue. Checks that require manual review are "
-        "flagged in the Notes column.",
+        "severe. Items with partial credit are flagged <b>REVIEW</b> in "
+        "the Notes column -- a human should confirm.",
         styles["small"],
     ))
     story.append(Spacer(1, 4))
@@ -149,12 +244,17 @@ def _add_rubric_table(story: List, graded: GradedSubmission,
     ]]
     row_colours: List[Tuple[int, Color]] = []
     for idx, gi in enumerate(graded.graded_items, start=1):
+        note = gi.notes or ""
+        # Flag partial-credit rows so teachers can distinguish "auto-flunked"
+        # from "needs a human to read the student code" at a glance.
+        if 0 < gi.earned < gi.item.points:
+            note = ("<b>REVIEW:</b> " + note) if note else "<b>REVIEW</b>"
         rows.append([
             Paragraph(str(idx), styles["small"]),
             Paragraph(gi.item.description, styles["small"]),
             Paragraph(f"{gi.earned:.1f} / {gi.item.points:.1f}",
                       styles["small"]),
-            Paragraph(gi.notes or "", styles["small"]),
+            Paragraph(note, styles["small"]),
         ])
         if gi.earned < gi.item.points:
             row_colours.append((idx, _shade_for(gi.severity or 2)))
@@ -252,14 +352,83 @@ def _test_error_cell(outcome: TestOutcome, styles: dict):
     return Paragraph("<br/>".join(lines), styles["small"])
 
 
+def _add_checkstyle_details(story: List, graded: GradedSubmission,
+                            styles: dict) -> None:
+    """New section: list concrete checkstyle hits (file:line:rule).
+
+    Capped at 20 rows so a noisy submission doesn't blow the page budget;
+    the at-a-glance banner already reports the total count.
+    """
+    violations = graded.checkstyle.violations
+    story.append(Paragraph("Checkstyle Details", styles["h2"]))
+    if graded.checkstyle.error:
+        story.append(Paragraph(
+            f"<b>Checkstyle did not run:</b> "
+            f"{_escape(graded.checkstyle.error)}",
+            styles["red"],
+        ))
+        return
+    if not violations:
+        story.append(Paragraph(
+            "No violations against the bundled <i>checkstyle.xml</i>.",
+            styles["small"],
+        ))
+        return
+    cap = 20
+    shown = violations[:cap]
+    story.append(Paragraph(
+        f"{len(violations)} violation(s) -- "
+        f"showing first {len(shown)}. Grouped rule frequencies are in the "
+        "Quick Review box at the end of the report.",
+        styles["small"],
+    ))
+    story.append(Spacer(1, 4))
+    rows: List[List] = [[
+        Paragraph("<b>#</b>", styles["small"]),
+        Paragraph("<b>File</b>", styles["small"]),
+        Paragraph("<b>Line</b>", styles["small"]),
+        Paragraph("<b>Rule</b>", styles["small"]),
+        Paragraph("<b>Message</b>", styles["small"]),
+    ]]
+    for idx, v in enumerate(shown, start=1):
+        rows.append([
+            Paragraph(str(idx), styles["small"]),
+            Paragraph(_escape(_short_path(v.path)), styles["small"]),
+            Paragraph(str(v.line or ""), styles["small"]),
+            Paragraph(_escape(v.rule), styles["small"]),
+            Paragraph(_escape(_clip(v.message, 180)), styles["small"]),
+        ])
+    table = Table(rows, colWidths=[0.3 * inch, 1.8 * inch, 0.5 * inch,
+                                   1.5 * inch, 3.4 * inch])
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.3, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 0), (-1, 0), Color(0.85, 0.85, 0.85)),
+    ]))
+    story.append(table)
+
+
+def _short_path(path: str) -> str:
+    """Trim an absolute path to the Compiler/... suffix for readability."""
+    parts = path.replace("\\", "/").split("/")
+    try:
+        idx = parts.index("Compiler")
+        return "/".join(parts[idx:])
+    except ValueError:
+        return "/".join(parts[-3:])
+
+
 def _add_doc_listing(story: List, graded: GradedSubmission,
                      styles: dict) -> None:
+    member_total = sum(1 + len(c.methods) for c in graded.classes)
+    doc_fails = sum(1 for f in graded.proximity if not f.passed)
     story.append(Paragraph("Documentation Review", styles["h2"]))
     story.append(Paragraph(
-        "Every class and method the autograder found, along with the result "
-        "of the javadoc keyword-proximity and @-tag checks. Rows in red are "
-        "candidates for manual review -- the autograder is lenient by design, "
-        "but it flags anything shallow or tag-incomplete.",
+        f"{member_total} members checked &middot; "
+        f"{doc_fails} flagged. "
+        "Every class and method the autograder found, with the result of "
+        "javadoc keyword-proximity and @-tag checks. Rows in red are "
+        "candidates for manual review. The Location column is file:line.",
         styles["small"],
     ))
     story.append(Spacer(1, 4))
@@ -269,6 +438,7 @@ def _add_doc_listing(story: List, graded: GradedSubmission,
         Paragraph("<b>Class</b>", styles["small"]),
         Paragraph("<b>Member</b>", styles["small"]),
         Paragraph("<b>Doc / Keywords</b>", styles["small"]),
+        Paragraph("<b>Location</b>", styles["small"]),
         Paragraph("<b>Status</b>", styles["small"]),
     ]]
     row_colours: List[Tuple[int, Color]] = []
@@ -293,12 +463,13 @@ def _add_doc_listing(story: List, graded: GradedSubmission,
             Paragraph("", styles["small"]),
             Paragraph("No classes could be parsed -- check for syntax errors.",
                       styles["red"]),
+            Paragraph("", styles["small"]),
             Paragraph("FAIL", styles["small"]),
         ])
         row_colours.append((1, _shade_for(3)))
 
-    table = Table(rows, colWidths=[1.2 * inch, 1.8 * inch, 3.4 * inch,
-                                   1.1 * inch], repeatRows=1)
+    table = Table(rows, colWidths=[1.05 * inch, 1.55 * inch, 2.95 * inch,
+                                   0.95 * inch, 1.0 * inch], repeatRows=1)
     cmds = [
         ("GRID", (0, 0), (-1, -1), 0.3, colors.black),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -316,10 +487,12 @@ def _class_row(cls, finding, styles) -> List:
                    if cls.javadoc else "(no class javadoc)")
     doc_snippet = _clip(doc_snippet, 180)
     status = _status_text(finding, default="CLASS")
+    location = f"{_short_path(cls.file)}:{cls.line}"
     return [
         Paragraph(f"<b>{_escape(cls.name)}</b>", styles["small"]),
         Paragraph("<i>class header</i>", styles["small"]),
         Paragraph(_escape(doc_snippet), styles["small"]),
+        Paragraph(_escape(location), styles["small"]),
         Paragraph(status, styles["small"]),
     ]
 
@@ -341,10 +514,12 @@ def _method_row(method, finding, styles) -> List:
            f"{', '.join(method.params) if method.params else ''}) "
            f"&rarr; {_escape(method.return_type)}")
     status = _status_text(finding, default="OK")
+    location = f"{_short_path(method.file)}:{method.line}"
     return [
         Paragraph(_escape(method.class_name), styles["small"]),
         Paragraph(sig, styles["small"]),
         Paragraph(_escape(doc_snippet), styles["small"]),
+        Paragraph(_escape(location), styles["small"]),
         Paragraph(status, styles["small"]),
     ]
 
