@@ -697,11 +697,32 @@ def _add_hidden_test_reference(story: List, graded: GradedSubmission,
         expected_text = "\n".join(case.expected_stdout) \
             if case.expected_stdout else "(no output expected)"
 
+        # Actual output block: show the lines the student's interpreter
+        # produced. If the test errored / timed out, show the high-level
+        # reason and a short stderr snippet instead -- otherwise the
+        # teacher has no way to tell why a FAIL happened from this page.
+        actual_lines = list(outcome.actual_stdout)
+        actual_detail = ""
+        if not actual_lines and outcome.error:
+            actual_detail = f"({outcome.error})"
+        elif not actual_lines:
+            actual_detail = "(no output)"
+        actual_text = "\n".join(actual_lines) if actual_lines else actual_detail
+        if outcome.stderr and not outcome.passed:
+            actual_text = actual_text + "\n-- stderr --\n" + \
+                _first_n_lines_plain(outcome.stderr, 4)
+
+        # Colour the actual-output cell green on PASS, red on FAIL so the
+        # teacher can eyeball agreement at a glance.
+        actual_bg = (Color(0.85, 0.95, 0.85) if outcome.passed
+                     else Color(1.00, 0.85, 0.83))
+
         header = (f"<b>Test {idx}: {_escape(case.name)}</b> "
                   f"&mdash; {_escape(case.description)} "
                   f"[<b>{verdict}</b>]")
         source_mono = _escape(source).replace("\n", "<br/>")
         expected_mono = _escape(expected_text).replace("\n", "<br/>")
+        actual_mono = _escape(actual_text).replace("\n", "<br/>")
 
         block = Table(
             [
@@ -710,6 +731,9 @@ def _add_hidden_test_reference(story: List, graded: GradedSubmission,
                 [Paragraph(source_mono, styles["mono"])],
                 [Paragraph("<b>Expected output:</b>", styles["small"])],
                 [Paragraph(expected_mono, styles["mono"])],
+                [Paragraph("<b>Actual output (student run):</b>",
+                           styles["small"])],
+                [Paragraph(actual_mono, styles["mono"])],
             ],
             colWidths=[7.4 * inch],
             style=TableStyle([
@@ -721,6 +745,7 @@ def _add_hidden_test_reference(story: List, graded: GradedSubmission,
                  Color(0.97, 0.97, 0.94)),
                 ("BACKGROUND", (0, 4), (-1, 4),
                  Color(0.94, 0.97, 0.94)),
+                ("BACKGROUND", (0, 6), (-1, 6), actual_bg),
                 ("LEFTPADDING", (0, 0), (-1, -1), 5),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 5),
                 ("TOPPADDING", (0, 0), (-1, -1), 3),
@@ -730,3 +755,14 @@ def _add_hidden_test_reference(story: List, graded: GradedSubmission,
         )
         story.append(KeepTogether(block))
         story.append(Spacer(1, 8))
+
+
+def _first_n_lines_plain(text: str, n: int) -> str:
+    """First N lines of a string without HTML escaping or <br/> markup.
+
+    Used when the caller will escape the result themselves.
+    """
+    lines = text.splitlines()
+    if len(lines) <= n:
+        return "\n".join(lines)
+    return "\n".join(lines[:n]) + "\n[... truncated ...]"

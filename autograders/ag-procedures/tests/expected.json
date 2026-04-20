@@ -18,5 +18,25 @@
   "test05_recursion": {
     "description": "Recursive factorial: fact(0)=1, fact(1)=1, fact(5)=120, fact(6)=720.",
     "expected": ["1", "1", "120", "720"]
+  },
+  "test06_shadowing": {
+    "description": "Parameter name shadows a global: caller's n (7) must survive the call even though callee reassigns its local n.",
+    "expected": ["99", "7"]
+  },
+  "test07_return_in_expr": {
+    "description": "Return value used as operand in arithmetic: triple(4) + triple(5) = 12 + 15.",
+    "expected": ["27"]
+  },
+  "test08_nested_call": {
+    "description": "Nested procedure calls: result of times2(5)=10 becomes argument to add1, giving 11.",
+    "expected": ["11"]
+  },
+  "test09_conditional_return": {
+    "description": "Conditional return path (abs): value depends on which IF branch runs. 5, -8, 0 -> 5, 8, 0.",
+    "expected": ["5", "8", "0"]
+  },
+  "test10_fibonacci": {
+    "description": "Double-recursion (fib): fib(0)=1, fib(1)=1, fib(5)=8, fib(8)=34.",
+    "expected": ["1", "1", "8", "34"]
   }
 }

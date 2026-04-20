@@ -65,7 +65,7 @@ METHOD_KEYWORDS = {
         ["procedure", "declaration", "parameter", "body", "name"], 3),
     ("ProcedureCall", "eval"): (
         ["evaluate", "procedure", "call", "argument", "environment",
-         "parameter", "return", "body"], 4),
+         "parameter", "return", "body"], 3),
     ("ProcedureCall", "ProcedureCall"): (                   # constructor
         ["procedure", "call", "argument", "expression"], 2),
     ("Program", "exec"): (
@@ -85,9 +85,9 @@ METHOD_KEYWORDS = {
     ("Environment", "getProcedure"): (
         ["procedure", "lookup", "global", "return"], 2),
     ("Parser", "parseProgram"): (
-        ["parse", "program", "procedure", "declaration", "statement"], 4),
+        ["parse", "program", "procedure", "declaration", "statement"], 3),
     ("Parser", "parseProcedureDeclaration"): (
-        ["parse", "procedure", "declaration", "parameter", "body"], 4),
+        ["parse", "procedure", "declaration", "parameter", "body"], 3),
     ("Parser", "parseFactor"): (
         ["factor", "procedure", "call", "parse", "identifier"], 3),
 }
