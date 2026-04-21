@@ -5,11 +5,32 @@ to the generic agcore.grader.
 
 The rubric text below is taken verbatim from the ATCS-Compilers Procedures
 Peer Review sheet so the teacher can compare row-for-row.
+
+AIRTIGHTNESS NOTE
+-----------------
+Every rubric checker that depends on AST-resolved classes or methods has a
+text-level fallback for the case where a student's file has a syntax error
+and javalang can't build an AST for it. Without that fallback, a single
+missing semicolon silently converts every rubric row that touches that
+file into "role unfilled / method missing" -- the exact bug teachers kept
+hitting on real submissions. Helpers:
+
+    * _role_source(g, role)        -> str | None   (raw source, with
+                                                     unparsed-file fallback)
+    * _role_unparseable_note(g, role) -> str       (teacher-visible note if
+                                                     the file didn't parse)
+    * _grep_extends(src, sup)      -> bool
+    * _grep_method(src, aliases)   -> bool
+
+Each checker consults these before deciding "genuinely missing vs. file
+broken", so a student never loses credit for something their code
+actually contains.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Callable, List, Sequence
 
@@ -259,34 +280,49 @@ def proximity_rule(graded: GradedSubmission) -> List[ProximityFinding]:
 # --------------------------------------------------------------------------- #
 
 def _has_both_ast_classes(g: GradedSubmission) -> CheckResult:
-    have_decl = g.class_for_role("ProcedureDeclaration") is not None
-    have_call = g.class_for_role("ProcedureCall") is not None
-    if have_decl and have_call:
-        return CheckResult(earned=10, notes="", severity=0)
+    """Rubric row 1: both ProcedureDeclaration and ProcedureCall exist.
+
+    Credit is awarded per-role: 5 pts for PD, 5 pts for PC. This keeps
+    the rubric fair when a student has one class and not the other --
+    previously a missing PC zeroed out credit for an otherwise-present
+    PD, which violates the "independent parts stay independent"
+    principle.
+
+    Parse-failure fallback: if a role is missing AST-wise but there's
+    an unparseable file whose basename matches the role, award 3 pts
+    (of the 5) -- the class is almost certainly present, we just
+    can't see it. Teacher-visible note explains exactly which file
+    failed so they can spot-check.
+    """
+    roles = (("ProcedureDeclaration", 5.0), ("ProcedureCall", 5.0))
+    score = 0.0
+    notes: List[str] = []
     missing = []
-    parse_notes: List[str] = []
-    for role, present in (("ProcedureDeclaration", have_decl),
-                          ("ProcedureCall", have_call)):
-        if present:
+    for role, points in roles:
+        cls = g.class_for_role(role)
+        if cls is not None:
+            score += points
             continue
         missing.append(role)
         fail = g.failure_for_role(role)
         if fail is not None:
             where = f" near line {fail.line}" if fail.line else ""
-            parse_notes.append(
-                f"{fail.file} failed to parse{where}: {fail.reason}")
-    # If BOTH the missing roles are explained by parse failures, award
-    # partial credit (3/10) -- the class is almost certainly present, we
-    # just can't see it. Zero credit for a truly absent class; half
-    # credit for a syntactically broken one that still has the right
-    # file name on disk.
-    earned = 3.0 if parse_notes and len(parse_notes) == len(missing) else 0.0
-    note = f"missing AST class (or unrecognised role): {', '.join(missing)}"
-    if parse_notes:
-        note = ("; ".join(parse_notes)
-                + " -- structural checks skipped for these classes")
-    severity = (SEVERITY_MEDIUM if earned > 0 else SEVERITY_MAJOR)
-    return CheckResult(earned=earned, notes=note, severity=severity)
+            score += points * 0.6  # 3 of 5
+            notes.append(
+                f"{role}: {fail.file} failed to parse{where}: "
+                f"{fail.reason} -- structural checks skipped "
+                f"(partial credit awarded)")
+        else:
+            notes.append(f"{role}: no class matched this role")
+    earned = round(score, 1)
+    if earned >= 10:
+        severity = 0
+    elif earned >= 5:
+        severity = SEVERITY_MEDIUM
+    else:
+        severity = SEVERITY_MAJOR
+    return CheckResult(earned=earned, notes="; ".join(notes),
+                       severity=severity)
 
 
 def _class_header_tags(g: GradedSubmission,
@@ -295,23 +331,40 @@ def _class_header_tags(g: GradedSubmission,
 
     class_role is a rubric role name ("ProcedureCall") not a literal class
     name -- g.class_for_role handles student renames.
+
+    Unparseable-file fallback: if the class's file has a syntax error
+    that blocked javalang, we text-scan the raw source for the class
+    header javadoc and its @author/@version tags rather than report a
+    spurious "not found". That way a student who wrote the javadoc but
+    also has a missing semicolon still gets credit for the javadoc.
     """
     cls = g.class_for_role(class_role)
-    if cls is None:
-        return CheckResult(earned=0,
-                           notes=f"{class_role} not found (no class matched "
-                                 f"the expected role)",
-                           severity=SEVERITY_MAJOR)
-    if cls.javadoc is None:
-        return CheckResult(earned=0, notes="no class javadoc",
-                           severity=SEVERITY_MAJOR)
-    has_author = bool(cls.javadoc.tags_named("@author"))
-    has_version = bool(cls.javadoc.tags_named("@version"))
-    has_summary = bool(cls.javadoc.description.strip())
-    score = 0.0
-    notes = []
-    # Split the points three ways: summary / author / version.
+    unparseable = _role_unparseable_note(g, class_role)
+    src = _role_source(g, class_role) or ""
     per = points / 3.0
+
+    if cls is None and not src:
+        return CheckResult(
+            earned=0,
+            notes=f"{class_role} not found (no class matched the expected role)",
+            severity=SEVERITY_MAJOR,
+        )
+
+    if cls is not None and cls.javadoc is not None:
+        has_author = bool(cls.javadoc.tags_named("@author"))
+        has_version = bool(cls.javadoc.tags_named("@version"))
+        has_summary = bool(cls.javadoc.description.strip())
+    elif cls is not None and cls.javadoc is None:
+        has_summary, has_author, has_version = False, False, False
+    else:
+        # AST view unavailable: fall back to text grep.
+        has_summary, has_author, has_version = _grep_class_javadoc(src)
+
+    score = 0.0
+    notes: List[str] = []
+    if unparseable:
+        notes.append(unparseable)
+        notes.append("javadoc scanned via text match (AST view unavailable)")
     if has_summary:
         score += per
     else:
@@ -334,13 +387,49 @@ def _class_methods_tags(g: GradedSubmission, class_role: str,
                         points: float) -> CheckResult:
     """Check every method in the named class has a javadoc with @param (for
     each parameter) and @return (if non-void).
+
+    Unparseable-file fallback: without an AST we can't enumerate methods,
+    but we can count /** */ blocks and compare against the number of
+    method-signature-looking lines. If the ratio is reasonable, award
+    partial credit with a clear note so the teacher knows it wasn't
+    verified structurally.
     """
     cls = g.class_for_role(class_role)
+    unparseable = _role_unparseable_note(g, class_role)
+    src = _role_source(g, class_role) or ""
+
+    if cls is None and not src:
+        return CheckResult(
+            earned=0,
+            notes=f"{class_role} not found (no class matched the expected role)",
+            severity=SEVERITY_MAJOR,
+        )
+
     if cls is None:
-        return CheckResult(earned=0,
-                           notes=f"{class_role} not found (no class matched "
-                                 f"the expected role)",
-                           severity=SEVERITY_MAJOR)
+        # File unparseable. Approximate: count /** ... */ blocks and
+        # method-signature lines; award proportional credit.
+        blocks = len(re.findall(r"/\*\*.*?\*/", src, re.DOTALL))
+        # Rough method-signature pattern: `public|private|protected ... name(...)`
+        # or a constructor `ClassName(...)` before a `{`. Count lines that look
+        # like method decls (have parens followed by a { on the same or next
+        # non-blank line).
+        method_like = len(re.findall(
+            r"(?m)^\s*(?:public|private|protected|static|\s)*[\w<>\[\],\s]+\s"
+            r"+\w+\s*\([^)]*\)\s*(?:throws[^{{]*)?\{{", src))
+        if method_like == 0:
+            return CheckResult(
+                earned=points, notes=(unparseable + "; no methods visible")
+                if unparseable else "no methods",
+                severity=0,
+            )
+        fraction = min(1.0, blocks / max(method_like, 1))
+        earned = round(points * fraction, 1)
+        note = (f"{unparseable}; text-match heuristic: {blocks} javadoc "
+                f"blocks for ~{method_like} methods (scored {earned}/{points})")
+        severity = 0 if earned >= points else (SEVERITY_MINOR if fraction >= 0.66
+                                               else SEVERITY_MEDIUM)
+        return CheckResult(earned=earned, notes=note, severity=severity)
+
     if not cls.methods:
         return CheckResult(earned=points, notes="no methods",
                            severity=0)
@@ -379,22 +468,45 @@ def _class_methods_tags(g: GradedSubmission, class_role: str,
 
 
 def _procdecl_extends_and_exec(g: GradedSubmission) -> CheckResult:
+    """Rubric row 4: ProcedureDeclaration extends Statement + has exec()
+    that registers the procedure with the environment.
+
+    Independent of every other row -- only looks at ProcedureDeclaration.
+    Has a text-level fallback so a student whose ProcedureDeclaration.java
+    has a syntax error still gets credit for the visible extends clause
+    and exec method declaration.
+    """
     cls = g.class_for_role("ProcedureDeclaration")
-    if cls is None:
-        return CheckResult(earned=0, notes="ProcedureDeclaration role missing",
-                           severity=SEVERITY_MAJOR)
+    unparseable = _role_unparseable_note(g, "ProcedureDeclaration")
+    src = _role_source(g, "ProcedureDeclaration") or ""
     score = 0.0
     notes: List[str] = []
-    if cls.superclass == "Statement":
-        score += 5
+
+    if cls is None and not src:
+        return CheckResult(earned=0, notes="ProcedureDeclaration role missing",
+                           severity=SEVERITY_MAJOR)
+    if unparseable:
+        notes.append(unparseable)
+
+    # -- Extends Statement
+    if cls is not None:
+        if cls.superclass == "Statement":
+            score += 5
+        else:
+            notes.append(
+                f"does not extend Statement (extends {cls.superclass!r})")
     else:
-        notes.append(f"does not extend Statement (extends {cls.superclass!r})")
-    exec_method = g.method_for_role("ProcedureDeclaration", "exec")
-    if exec_method is None:
-        notes.append("no exec method")
-    else:
+        if _grep_extends(src, "Statement"):
+            score += 5
+            notes.append("extends Statement found via text match")
+        else:
+            notes.append("does not appear to extend Statement")
+
+    # -- exec method
+    exec_method = (g.method_for_role("ProcedureDeclaration", "exec")
+                   if cls is not None else None)
+    if exec_method is not None:
         score += 3
-        # Heuristic: doc mentions registering / symbol table / setProcedure.
         doc_text = (exec_method.javadoc.plain_text()
                     if exec_method.javadoc else "")
         if any(k in doc_text for k in
@@ -403,6 +515,16 @@ def _procdecl_extends_and_exec(g: GradedSubmission) -> CheckResult:
         else:
             notes.append("exec javadoc does not mention registering the "
                          "procedure/symbol-table")
+    else:
+        exec_aliases = g.config.method_aliases.get(
+            ("ProcedureDeclaration", "exec"), ("exec",))
+        if _grep_method(src, exec_aliases):
+            score += 3
+            notes.append("exec found via text match; javadoc not verified "
+                         "(file unparseable)")
+        else:
+            notes.append("no exec method")
+
     severity = 0 if score >= 10 else (SEVERITY_MEDIUM if score >= 5
                                       else SEVERITY_MAJOR)
     return CheckResult(earned=round(score, 1),
@@ -410,33 +532,41 @@ def _procdecl_extends_and_exec(g: GradedSubmission) -> CheckResult:
 
 
 def _procdecl_params_and_body(g: GradedSubmission) -> CheckResult:
+    """Rubric row 5: constructor takes (name, params, body) + stores them.
+
+    Independent of the exec-method row above. Uses AST for the constructor
+    when available, falls back to text grep for unparseable files.
+    """
     cls = g.class_for_role("ProcedureDeclaration")
-    if cls is None:
-        return CheckResult(earned=0, notes="ProcedureDeclaration role missing",
-                           severity=SEVERITY_MAJOR)
-    # Look for a constructor taking (String name, List<String> params, Statement body)
+    src = _role_source(g, "ProcedureDeclaration") or ""
+    unparseable = _role_unparseable_note(g, "ProcedureDeclaration")
     score = 0.0
     notes: List[str] = []
-    # A Java constructor's method_name is always the class's own name. Since
-    # the resolver may have matched a renamed class, use cls.name (not the
-    # role name) to find the constructor.
-    ctor = next((m for m in cls.methods
-                 if m.method_name == cls.name), None)
-    if ctor is None:
-        notes.append("no constructor found")
-    else:
-        # Constructor should have three parameters named name, params, body
-        # (or similar). We only require count.
-        if len(ctor.params) >= 2:
+    if cls is None and not src:
+        return CheckResult(earned=0, notes="ProcedureDeclaration role missing",
+                           severity=SEVERITY_MAJOR)
+    if unparseable:
+        notes.append(unparseable)
+
+    # -- Constructor with >=2 params
+    if cls is not None:
+        ctor = next((m for m in cls.methods
+                     if m.method_name == cls.name), None)
+        if ctor is None:
+            notes.append("no constructor found")
+        elif len(ctor.params) >= 2:
             score += 3
         else:
             notes.append(f"constructor has {len(ctor.params)} params "
                          f"(expected >= 2)")
-    # Look for a field list/params and a body.
-    src = _role_source(g, "ProcedureDeclaration")
-    if src is None:
-        return CheckResult(earned=round(score, 1), notes="; ".join(notes),
-                           severity=SEVERITY_MAJOR)
+    else:
+        if _grep_ctor(src, 2):
+            score += 3
+            notes.append("constructor (>=2 params) found via text match")
+        else:
+            notes.append("no constructor with >=2 params visible")
+
+    # -- Parameter list field + Statement body (text-grep; works either way)
     if "List<" in src or "java.util.List" in src:
         score += 2
     else:
@@ -445,6 +575,7 @@ def _procdecl_params_and_body(g: GradedSubmission) -> CheckResult:
         score += 1
     else:
         notes.append("no Statement body field")
+
     severity = 0 if score >= 6 else (SEVERITY_MINOR if score >= 4
                                      else SEVERITY_MEDIUM)
     return CheckResult(earned=round(score, 1),
@@ -466,23 +597,40 @@ def _proccall_extends_and_eval(g: GradedSubmission) -> CheckResult:
     score so the grep can't inflate it.
     """
     cls = g.class_for_role("ProcedureCall")
-    if cls is None:
+    src = _role_source(g, "ProcedureCall") or ""
+    unparseable = _role_unparseable_note(g, "ProcedureCall")
+    if cls is None and not src:
         return CheckResult(earned=0, notes="ProcedureCall role missing",
                            severity=SEVERITY_MAJOR)
     score = 0.0
     notes: List[str] = []
+    if unparseable:
+        notes.append(unparseable)
     # -- Structural sub-score, up to 6 pts. Spread the credit so no single
     # keyword can clear more than 2 pts by itself.
-    if cls.superclass == "Expression":
-        score += 2
+    if cls is not None:
+        if cls.superclass == "Expression":
+            score += 2
+        else:
+            notes.append(
+                f"does not extend Expression (extends {cls.superclass!r})")
     else:
-        notes.append(f"does not extend Expression (extends {cls.superclass!r})")
-    eval_m = g.method_for_role("ProcedureCall", "eval")
-    if eval_m is None:
+        if _grep_extends(src, "Expression"):
+            score += 2
+            notes.append("extends Expression found via text match")
+        else:
+            notes.append("does not appear to extend Expression")
+    eval_m = (g.method_for_role("ProcedureCall", "eval")
+              if cls is not None else None)
+    eval_aliases = g.config.method_aliases.get(
+        ("ProcedureCall", "eval"), ("eval",))
+    has_eval = eval_m is not None or (cls is None and _grep_method(src, eval_aliases))
+    if not has_eval:
         notes.append("no eval method")
     else:
         score += 1
-        src = _role_source(g, "ProcedureCall") or ""
+        if cls is None:
+            notes.append("eval found via text match (AST view unavailable)")
         if "getProcedure" in src:
             score += 1
         else:
@@ -535,20 +683,30 @@ def _proccall_extends_and_eval(g: GradedSubmission) -> CheckResult:
 
 def _program_class(g: GradedSubmission) -> CheckResult:
     cls = g.class_for_role("Program")
-    if cls is None:
+    src = _role_source(g, "Program") or ""
+    unparseable = _role_unparseable_note(g, "Program")
+    if cls is None and not src:
         return CheckResult(earned=0, notes="no Program class (role unfilled)",
                            severity=SEVERITY_MAJOR)
     score = 0.0
     notes: List[str] = []
-    if cls.superclass in (None, "Object"):
-        score += 2
+    if unparseable:
+        notes.append(unparseable)
+    # -- Should NOT extend Statement
+    if cls is not None:
+        if cls.superclass in (None, "Object"):
+            score += 2
+        else:
+            notes.append(f"Program should NOT extend Statement "
+                         f"(currently extends {cls.superclass!r})")
     else:
-        notes.append(f"Program should NOT extend Statement "
-                     f"(currently extends {cls.superclass!r})")
-    # Should hold procedure list + a main Statement. Use the resolved
-    # ProcedureDeclaration class name so renamed classes (ProcedureDecl,
-    # ProcDecl, ...) still get credit when referenced from Program.
-    src = _role_source(g, "Program") or ""
+        # Text-level: only lose the 2 pts if we can see `extends Statement`
+        # on the Program class declaration; otherwise give benefit of the doubt.
+        if re.search(r"class\s+\w+\s+extends\s+Statement\b", src):
+            notes.append("Program appears to extend Statement (text match)")
+        else:
+            score += 2
+    # -- Holds procedure list + a Statement main. Text-grep works either way.
     pd_cls = g.class_for_role("ProcedureDeclaration")
     pd_name = pd_cls.name if pd_cls is not None else "ProcedureDeclaration"
     if pd_name in src:
@@ -627,26 +785,45 @@ def _parse_program_and_procedure(g: GradedSubmission) -> CheckResult:
 
 
 def _env_hierarchy(g: GradedSubmission) -> CheckResult:
+    """Rubric row 11: Environment has parent-pointer + two constructors.
+
+    Row 12 (declareVariable/setVariable/getVariable) is independent --
+    even if the hierarchy check fails, a student can still get full
+    credit for declare/set/get, and vice versa.
+    """
     cls = g.class_for_role("Environment")
-    if cls is None:
+    src = _role_source(g, "Environment") or ""
+    unparseable = _role_unparseable_note(g, "Environment")
+    if cls is None and not src:
         return CheckResult(earned=0, notes="Environment role missing",
                            severity=SEVERITY_MAJOR)
-    src = _role_source(g, "Environment") or ""
     score = 0.0
     notes: List[str] = []
+    if unparseable:
+        notes.append(unparseable)
     # We look for the literal word "Environment" in the source even when the
     # class is renamed: an Environment-like class almost always still imports
     # or references the canonical superclass/parent type name somewhere.
-    if "parent" in src and ("Environment" in src or cls.name in src):
+    cls_name = cls.name if cls is not None else "Environment"
+    if "parent" in src and ("Environment" in src or cls_name in src):
         score += 3
     else:
         notes.append("no parent Environment reference")
-    # Constructors: java constructor name == class name, so we count
-    # constructors by comparing against the resolved class name, not the
-    # role name.
-    has_two_ctors = sum(1 for m in cls.methods
-                        if m.method_name == cls.name) >= 2
-    if has_two_ctors:
+    # -- Count constructors. AST is exact; text-grep fallback counts
+    # `ClassName(...)` signatures (with a `{` following).
+    if cls is not None:
+        ctor_count = sum(1 for m in cls.methods if m.method_name == cls.name)
+    else:
+        # Find first class name in src and count its ctor signatures.
+        m = re.search(r"\bclass\s+(\w+)\b", src)
+        if m:
+            cname = m.group(1)
+            ctor_count = len(re.findall(
+                rf"\b{re.escape(cname)}\s*\([^)]*\)\s*(?:throws[^{{]*)?\{{",
+                src))
+        else:
+            ctor_count = 0
+    if ctor_count >= 2:
         score += 3
     else:
         notes.append("only one Environment constructor; need (no-arg) and "
@@ -658,16 +835,41 @@ def _env_hierarchy(g: GradedSubmission) -> CheckResult:
 
 
 def _env_declare_set_get(g: GradedSubmission) -> CheckResult:
+    """Rubric row 12: Environment has declareVariable/setVariable/getVariable.
+
+    Fully independent of row 11 -- a student with a broken parent-ptr
+    constructor still gets full credit here if the three methods are
+    present, and vice versa. Unparseable-file fallback uses text grep.
+    """
     required = ["declareVariable", "setVariable", "getVariable"]
-    present = [m for m in required
-               if g.method_for_role("Environment", m) is not None]
+    cls = g.class_for_role("Environment")
+    src = _role_source(g, "Environment") or ""
+    unparseable = _role_unparseable_note(g, "Environment")
+
+    present: List[str] = []
+    grep_only: List[str] = []
+    for m in required:
+        if cls is not None and g.method_for_role("Environment", m) is not None:
+            present.append(m)
+            continue
+        # Text-level fallback: any alias visible in the source counts.
+        aliases = g.config.method_aliases.get(
+            ("Environment", m), (m,))
+        if cls is None and _grep_method(src, aliases):
+            present.append(m)
+            grep_only.append(m)
     score = round(4 * len(present) / len(required), 1)
     missing = [m for m in required if m not in present]
+    notes: List[str] = []
+    if unparseable:
+        notes.append(unparseable)
+    if grep_only:
+        notes.append("found via text match: " + ", ".join(grep_only))
+    if missing:
+        notes.append("missing: " + ", ".join(missing))
     severity = 0 if not missing else (SEVERITY_MINOR if len(missing) == 1
                                       else SEVERITY_MEDIUM)
-    return CheckResult(earned=score,
-                       notes=("missing: " + ", ".join(missing))
-                       if missing else "",
+    return CheckResult(earned=score, notes="; ".join(notes),
                        severity=severity)
 
 
@@ -700,6 +902,12 @@ def _parser_procedure_and_factor(g: GradedSubmission) -> CheckResult:
     passed_names = {t.case.name for t in g.test_outcomes if t.passed}
     if "test04_return" in passed_names or "test05_recursion" in passed_names:
         score += 2
+    elif not g.compile_result.success:
+        # Don't accuse the student of failing behavioural tests when the
+        # project didn't even build -- that's a compile-row issue. Credit
+        # for the structural signals they DID show, flag as REVIEW.
+        notes.append("procedure-call-heavy tests not verified "
+                     "(compile failed)")
     elif pc_name in src:
         notes.append("procedure-call-heavy tests (return/recursion) failed")
     if unparseable:
@@ -803,6 +1011,100 @@ def _role_unparseable_note(g: GradedSubmission, class_role: str) -> str:
     where = f" near line {fail.line}" if fail.line else ""
     return (f"{fail.file} could not be parsed{where}: {fail.reason} "
             f"-- AST-level checks for this role were skipped")
+
+
+def _grep_extends(src: str, superclass: str) -> bool:
+    """Text-level check: does src declare `class X extends superclass`?
+
+    Used as a fallback when javalang couldn't parse the file so the AST
+    check can't see the extends clause. Matches `class Foo extends Bar`
+    with either a `{` or `implements` following -- an identifier after
+    `extends` is enough.
+    """
+    if not src:
+        return False
+    pattern = re.compile(
+        r"class\s+\w+\s+extends\s+" + re.escape(superclass) + r"\b")
+    return bool(pattern.search(src))
+
+
+def _grep_method(src: str, aliases: Sequence[str]) -> bool:
+    """Text-level check: does src declare a method matching any alias?
+
+    We look for `<alias>(` or `<alias> (` in the source -- Java allows
+    either. This is a rough heuristic (won't distinguish a method
+    declaration from a call site), but combined with the role's source
+    file (not the call site) it's reliable enough to rescue an
+    unparseable file's rubric row from a false "method missing".
+    """
+    if not src:
+        return False
+    return any(f"{a}(" in src or f"{a} (" in src for a in aliases)
+
+
+def _grep_ctor(src: str, min_params: int) -> bool:
+    """Text-level check: does src declare a constructor with >= min_params?
+
+    Finds `class <Name>` then looks for `<Name>(` where the paren group
+    contains at least (min_params - 1) commas. Approximate but catches
+    the common case of a multi-arg constructor we can't see via AST.
+    """
+    if not src:
+        return False
+    m = re.search(r"class\s+(\w+)\b", src)
+    if not m:
+        return False
+    cname = m.group(1)
+    # (?: ) non-capturing. Match ctor with a body `{` following.
+    ctor_pat = re.compile(
+        rf"\b{re.escape(cname)}\s*\(([^)]*)\)\s*(?:throws[^{{]*)?\{{")
+    for match in ctor_pat.finditer(src):
+        args = match.group(1).strip()
+        if not args and min_params == 0:
+            return True
+        # Count commas not inside angle brackets.
+        depth = 0
+        commas = 0
+        for ch in args:
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                commas += 1
+        if commas + 1 >= min_params:
+            return True
+    return False
+
+
+def _grep_class_javadoc(src: str) -> tuple:
+    """Text-level extraction of the class-level javadoc.
+
+    Returns (has_summary, has_author, has_version) as booleans. Picks
+    the last /** ... */ block that appears before the first `class X`
+    declaration in src -- that's conventionally the class header doc.
+    If no block or no class decl is found, returns all False.
+    """
+    if not src:
+        return (False, False, False)
+    class_match = re.search(r"\bclass\s+\w+", src)
+    cutoff = class_match.start() if class_match else len(src)
+    blocks = []
+    for m in re.finditer(r"/\*\*(.*?)\*/", src, re.DOTALL):
+        if m.start() < cutoff:
+            blocks.append(m.group(0))
+    if not blocks:
+        return (False, False, False)
+    header = blocks[-1]
+    has_author = "@author" in header
+    has_version = "@version" in header
+    # Description: content from "/**" up to the first @tag or closing */,
+    # minus leading "*" chars on each line.
+    inner = re.sub(r"^/\*\*|\*/$", "", header, flags=re.DOTALL)
+    desc_part = inner.split("@", 1)[0]
+    desc_clean = re.sub(r"(?m)^\s*\*\s?", "", desc_part).strip()
+    has_summary = bool(desc_clean)
+    return (has_summary, has_author, has_version)
 
 
 # --------------------------------------------------------------------------- #
