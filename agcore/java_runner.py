@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
+from . import extractor
+
 
 @dataclass
 class CompileResult:
@@ -55,7 +57,11 @@ def compile_project(
     The classes directory is created inside compiler_root.parent so we don't
     pollute the student's tree. Caller is responsible for cleanup.
     """
-    java_files = sorted(str(p) for p in compiler_root.rglob("*.java"))
+    # Skip directories listed in extractor.EXCLUDED_DIRS (notably ll1parser/,
+    # which is from the optional LL1 lab and must not influence grading).
+    java_files = sorted(
+        str(p) for p in extractor.iter_graded_java_files(compiler_root)
+    )
     if not java_files:
         return CompileResult(False, None, "no .java files found", "")
     classes_dir = Path(tempfile.mkdtemp(prefix="classes_",

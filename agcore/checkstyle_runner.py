@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
+from . import extractor
+
 
 VIOLATION_RE = re.compile(
     r"^\[(?P<level>WARN|ERROR)\]\s+(?P<path>.+?):"
@@ -71,7 +73,10 @@ def run_checkstyle(
     Returns:
         A CheckstyleResult with parsed violations and the raw stdout/stderr.
     """
-    java_files = sorted(str(p) for p in compiler_root.rglob("*.java"))
+    # Skip extractor.EXCLUDED_DIRS (e.g. the optional ll1parser/ directory).
+    java_files = sorted(
+        str(p) for p in extractor.iter_graded_java_files(compiler_root)
+    )
     result = CheckstyleResult()
     if not java_files:
         result.error = "no .java files found under the Compiler root"

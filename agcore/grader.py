@@ -23,6 +23,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 from . import checkstyle_runner, extractor, java_runner, javadoc_parser
 from .proximity import ProximityFinding
+from .role_resolver import RoleSpec, resolve_class_role, resolve_method
 from .rubric import CheckResult, GradedItem, RubricItem
 
 
@@ -68,6 +69,16 @@ class LabConfig:
     javac_exe: str = "javac"
     main_class: str = "parser.Parser"
 
+    # Role-based class + method resolution. class_roles maps a rubric-level
+    # role name (e.g. "ProcedureCall") to a RoleSpec that tells the resolver
+    # how to find that class even when the student renamed it. method_aliases
+    # maps a (class_role, method_role) pair to an ordered sequence of
+    # acceptable method names -- the first hit wins, so rubric-preferred
+    # spellings go first. Both default to empty; a lab that wants strict-name
+    # behaviour simply leaves them out and keeps calling class_by_name.
+    class_roles: Dict[str, RoleSpec] = field(default_factory=dict)
+    method_aliases: Dict[tuple, Sequence[str]] = field(default_factory=dict)
+
 
 @dataclass
 class GradedSubmission:
@@ -81,14 +92,50 @@ class GradedSubmission:
     test_outcomes: List[TestOutcome] = field(default_factory=list)
     proximity: List[ProximityFinding] = field(default_factory=list)
     graded_items: List[GradedItem] = field(default_factory=list)
+    # .java files javalang couldn't parse. A missing semicolon on line 1
+    # makes the whole file invisible to the role resolver, which then
+    # reports "parseProgram missing" etc. -- extremely misleading. The
+    # rubric checkers consult this list so they can report "file
+    # unparseable" instead.
+    unparsed_files: List[javadoc_parser.ParseFailure] = field(
+        default_factory=list)
+    # Memoisation for class_for_role so each rubric checker doesn't re-score
+    # every class. Populated lazily on first lookup per role name.
+    _role_cache: Dict[str, Optional[javadoc_parser.ClassRecord]] = field(
+        default_factory=dict, repr=False)
 
     # Lookup helpers used by lab-specific checkers:
     def class_by_name(self, name: str) -> Optional[javadoc_parser.ClassRecord]:
-        """Return the first class record matching name, or None."""
+        """Return the first class record matching name exactly, or None.
+
+        Kept for rare lookups where the rubric genuinely cares about the
+        literal name. Prefer class_for_role() for anything driven off the
+        peer-review rubric so student renames don't nuke the score.
+        """
         for cls in self.classes:
             if cls.name == name:
                 return cls
         return None
+
+    def class_for_role(
+        self, role: str
+    ) -> Optional[javadoc_parser.ClassRecord]:
+        """Fuzzy-resolve a rubric role (e.g. "ProcedureCall") to a class.
+
+        Falls back to exact-name lookup if the lab didn't configure a
+        RoleSpec for the role; returns None if nothing matches. Results
+        are cached per-submission so repeated calls from multiple rubric
+        checkers don't re-score every class.
+        """
+        if role in self._role_cache:
+            return self._role_cache[role]
+        spec = self.config.class_roles.get(role)
+        if spec is None:
+            resolved = self.class_by_name(role)
+        else:
+            resolved = resolve_class_role(self.classes, spec)
+        self._role_cache[role] = resolved
+        return resolved
 
     def all_methods(self) -> List[javadoc_parser.MethodRecord]:
         """Flat list of every method across every class."""
@@ -96,7 +143,7 @@ class GradedSubmission:
 
     def method(self, class_name: str,
                method_name: str) -> Optional[javadoc_parser.MethodRecord]:
-        """Find one method by class and name."""
+        """Find one method by class and name (strict, both names literal)."""
         cls = self.class_by_name(class_name)
         if not cls:
             return None
@@ -104,6 +151,104 @@ class GradedSubmission:
             if m.method_name == method_name:
                 return m
         return None
+
+    def method_for_role(
+        self, class_role: str, method_role: str
+    ) -> Optional[javadoc_parser.MethodRecord]:
+        """Fuzzy-resolve a rubric method role inside a class role.
+
+        The class is resolved via class_for_role; the method name is
+        matched against config.method_aliases[(class_role, method_role)]
+        (falling back to [method_role] if no aliases are configured).
+        """
+        cls = self.class_for_role(class_role)
+        if cls is None:
+            return None
+        aliases = self.config.method_aliases.get(
+            (class_role, method_role), (method_role,))
+        return resolve_method(cls, aliases)
+
+    def failure_for_role(
+        self, role: str
+    ) -> Optional[javadoc_parser.ParseFailure]:
+        """Return the ParseFailure entry for the file that WOULD hold role, if any.
+
+        Used by rubric checkers to distinguish "class genuinely missing"
+        from "class's file didn't parse so we can't see it". The heuristic
+        is simple: we check every failed file's basename against the
+        role's preferred_name and aliases. A match means "this is
+        probably where the role lived before the file broke". Returns the
+        first match or None.
+
+        A lab with no RoleSpec for the given role falls back to matching
+        role itself against the basename ("Parser" against "Parser.java").
+        """
+        if not self.unparsed_files:
+            return None
+        spec = self.config.class_roles.get(role)
+        names: List[str] = []
+        if spec is None:
+            names.append(role)
+        else:
+            names.append(spec.preferred_name)
+            names.extend(spec.aliases)
+        for fail in self.unparsed_files:
+            stem = fail.file.rsplit("/", 1)[-1]
+            if stem.endswith(".java"):
+                stem = stem[:-5]
+            if stem in names:
+                return fail
+        return None
+
+    def source_for_role(self, role: str) -> Optional[str]:
+        """Read the source text of the file that defines role, or None.
+
+        Priority order (in order of preference):
+          1. An unparsed file whose basename EXACTLY matches the role's
+             preferred_name -- that's almost certainly the file the
+             student meant as this role. This branch wins over AST
+             resolution on purpose: otherwise a sibling class (e.g.
+             ParserTester) can steal the Parser role via the
+             name_tokens match, pointing every grep check at the wrong
+             file.
+          2. class_for_role(role).file -- AST-verified location.
+          3. Any unparsed file whose basename matches preferred_name or
+             an alias, even when class_for_role returned None.
+
+        The first branch is load-bearing: when a student has a syntax
+        error in their real Parser.java, the actual method bodies we're
+        grepping for are still in that file, not in ParserTester.java.
+        """
+        spec = self.config.class_roles.get(role)
+        preferred_stem = spec.preferred_name if spec else role
+        fail = self.failure_for_role(role)
+
+        # Priority 1: unparsed file whose basename is exactly
+        # <preferred_name>.java. Reading it gives the grep pass the
+        # source it actually wants.
+        if fail is not None:
+            fail_basename = fail.file.rsplit("/", 1)[-1]
+            if fail_basename == f"{preferred_stem}.java":
+                path = self.submission.compiler_root / fail.file
+                try:
+                    return path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+
+        # Priority 2: AST-resolved class's file.
+        cls = self.class_for_role(role)
+        if cls is not None:
+            rel = cls.file
+        elif fail is not None:
+            # Priority 3: any unparsed file matching by alias/name.
+            rel = fail.file
+        else:
+            return None
+        path = self.submission.compiler_root / rel
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
 
     @property
     def total_earned(self) -> float:
@@ -144,13 +289,15 @@ def grade(zip_path: Path, config: LabConfig,
         submission.compiler_root, config.checkstyle_jar,
         config.checkstyle_xml, java_exe=config.java_exe,
     )
-    classes = javadoc_parser.parse_tree(submission.compiler_root)
+    classes, unparsed_files = javadoc_parser.parse_tree_with_failures(
+        submission.compiler_root)
     compile_result = java_runner.compile_project(
         submission.compiler_root, javac_exe=config.javac_exe,
     )
     graded = GradedSubmission(
         config=config, submission=submission, checkstyle=checkstyle,
         classes=classes, compile_result=compile_result,
+        unparsed_files=unparsed_files,
     )
 
     # Functional test pass -- each test is isolated so one failure doesn't

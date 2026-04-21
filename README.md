@@ -32,20 +32,64 @@ pip install -r requirements.txt
 
 ## Quick start (Procedures lab)
 
+Run every command from the `autograder-work/` directory (the one that
+contains `agcore/`, `autograders/`, `vendor/`, and `ag-tests/`).
+
+First-time setup — install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
 Grade a single student:
 
 ```bash
-./autograders/ag-procedures/ag-procedures student.zip -o reports/
+./autograders/ag-procedures/ag-procedures path/to/student.zip -o reports/
 ```
 
 Grade a whole folder of zips at once:
 
 ```bash
-./autograders/ag-procedures/ag-procedures ~/Downloads/submissions/ -o reports/
+./autograders/ag-procedures/ag-procedures ag-tests/inputs/ -o ag-tests/outputs/
 ```
 
-Each student gets a file `<studentzipname>_procedures_report.pdf` inside the
-output directory.
+Each student gets a file `<student-name>-procedures-report.pdf` inside the
+output directory, plus a batch summary at `overall.pdf` listing every
+student's score.
+
+### Non-zip files are ignored
+
+When you point the tool at a directory, anything that isn't a real `.zip`
+is skipped — stray `README.txt`, `.DS_Store`, PDFs, other folders, and
+macOS resource-fork siblings (`._Compiler.zip`) all get dropped silently.
+You can safely run the autograder against a messy `Downloads/` folder
+that mixes submissions with other files. When you point it at a single
+non-zip file, it prints `ignoring non-zip input: <name>` and exits
+without grading.
+
+### If `java` / `javac` aren't on your PATH
+
+Either export `PATH` for the session:
+
+```bash
+export PATH="/path/to/jdk/bin:$PATH"
+./autograders/ag-procedures/ag-procedures ag-tests/inputs/ -o ag-tests/outputs/
+```
+
+Or point at the binaries directly without touching `PATH`:
+
+```bash
+./autograders/ag-procedures/ag-procedures ag-tests/inputs/ -o ag-tests/outputs/ \
+    --java /path/to/java --javac /path/to/javac
+```
+
+If `./autograders/...` fails with a permission error, mark the wrapper
+executable (`chmod +x autograders/ag-procedures/ag-procedures`) or call
+it through Python directly:
+
+```bash
+python autograders/ag-procedures/grade.py ag-tests/inputs/ -o ag-tests/outputs/
+```
 
 ### CLI options
 
@@ -53,7 +97,8 @@ output directory.
 ag-procedures INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
 ```
 
-- `INPUT`: a `.zip` or a directory of `.zip`s.
+- `INPUT`: a `.zip` or a directory containing `.zip` files. Non-zip
+  entries in a directory are silently ignored.
 - `-o, --output`: output directory (default `./reports/`).
 - `--java / --javac`: override auto-detected binaries.
 - `--keep-temp`: keep extracted temp dirs for debugging.
@@ -80,34 +125,36 @@ junk is ignored.
 1. **At-a-glance banner** — six coloured cells at the top of page 1: Overall
    score, Build, Rubric, Tests, Checkstyle, Docs. Green / amber / red gives
    the whole verdict without scrolling.
-2. **Peer Checkoff Rubric** — one row per rubric line, taken verbatim from
+2. **Quick Review** — summary bullets + overall score out of 100, with a
+   green/amber/red band behind the score. Sits directly under the banner
+   so a teacher doing a fast pass sees the 3-5 line verdict before any
+   detail table.
+3. **Peer Checkoff Rubric** — one row per rubric line, taken verbatim from
    the Procedures peer review sheet. Any row where the student didn't earn
    full credit is shaded red; darker red = more severe. Partial-credit rows
    are tagged **REVIEW** so a human can confirm.
-3. **Internal Functional Test Cases** — ten hidden PASCAL programs that
+4. **Internal Functional Test Cases** — ten hidden PASCAL programs that
    exercise simple procedures, argument passing, scope isolation, return
    values, recursion, parameter shadowing, return values in expressions,
    nested calls, conditional returns, and double recursion. Each failing
    row shows the exact error (timeout, runtime error, or which output line
    diverged) — **no student code is reproduced**.
-4. **Checkstyle Details** — up to 20 concrete violations (file, line, rule,
+5. **Checkstyle Details** — up to 20 concrete violations (file, line, rule,
    message) so the teacher can point the student at specific fixes instead
    of just saying "clean this up."
-5. **Documentation Review** — one row per class and per method. Columns
+6. **Documentation Review** — one row per class and per method. Columns
    show the member, the javadoc summary, the `file:line` location, and a
    verdict. Rows flagged `REVIEW` missed the keyword-overlap threshold or
    are missing required `@param` / `@return` / `@author` / `@version` tags.
-6. **Quick Review** — summary bullets + overall score out of 100, with a
-   green/amber/red band behind the score.
 7. **Appendix: Hidden Test Suite** (final pages) — for each hidden test,
    the full PASCAL source, the expected output, and the student's *actual*
    output side-by-side. Green cell on pass, red cell on fail. This is a
    teacher-only reference; students don't see it because the zip name is
    prepended to the report file.
 
-The report typically runs 10–14 pages: banner + rubric (page 1), tests +
-checkstyle details (page 2), documentation listing + quick review (pages
-3–10), appendix (last 2–3 pages).
+The report typically runs 10–14 pages: banner + quick review + rubric
+(page 1), tests + checkstyle details (page 2), documentation listing
+(pages 3–10), appendix (last 2–3 pages).
 
 ## Layout
 
@@ -158,6 +205,38 @@ autograder-work/
 
 The shared `agcore` package stays untouched: everything lab-specific lives
 under `autograders/ag-<labname>/`.
+
+## Tolerating student renames (role-based resolution)
+
+The peer-review rubric names specific classes (`ProcedureCall`,
+`ProcedureDeclaration`, `Environment`, `Program`, `Parser`) and methods
+(`exec`, `eval`, `declareVariable`, `setVariable`, `getVariable`,
+`parseProgram`, `parseProcedureDeclaration`, `parseFactor`). Most students
+follow those names, but a few will rename — `ProcedureDecl`, `Call`, `Env`,
+`declareVar`, `parseProc` — and a human grading the peer review would still
+recognise the renamed class as filling the same ROLE.
+
+`agcore/role_resolver.py` reproduces that mental step. Each lab's
+`config.py` declares two dictionaries:
+
+- `CLASS_ROLES` maps a role name (e.g. `"ProcedureCall"`) to a `RoleSpec`
+  with a preferred name, aliases, token sets, expected superclass, and
+  required methods. The resolver scores every parsed class on a weighted
+  mix of those signals and returns the highest scorer.
+- `METHOD_ALIASES` maps `(class_role, method_role)` tuples to an ordered
+  sequence of acceptable method names — first hit wins.
+
+Rubric checkers then call `g.class_for_role("ProcedureCall")` and
+`g.method_for_role("ProcedureCall", "eval")` instead of literal
+`class_by_name("ProcedureCall")` / `method("ProcedureCall", "eval")`.
+A student who writes `class ProcCall extends Expression { public int
+evaluate(Environment env) { ... } }` still fulfils the role and still
+earns rubric credit — the autograder doesn't zero a student out for a
+stylistic rename.
+
+A lab that genuinely needs strict-name matching simply leaves
+`class_roles` and `method_aliases` empty in its `LabConfig`; the
+fallback path is plain exact-name lookup.
 
 ## Tuning the strictness
 

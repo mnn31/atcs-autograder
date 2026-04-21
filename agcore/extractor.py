@@ -19,6 +19,29 @@ from typing import Dict, Optional, Set
 
 REQUIRED_SUBDIRS = ("ast", "parser", "scanner", "environment")
 
+# Directory names anywhere in the submission tree whose .java sources must
+# NOT be considered by the autograder. The LL1 parser lab was OPTIONAL --
+# some students leave their ll1parser/ folder in the zip, but its presence,
+# doc quality, and even compile status must not affect the Procedures-lab
+# score. We skip it during compile, checkstyle, javadoc parsing, and
+# @author detection.
+EXCLUDED_DIRS = frozenset({"ll1parser", "__MACOSX"})
+
+
+def iter_graded_java_files(compiler_root: Path):
+    """Yield every .java path under compiler_root, skipping EXCLUDED_DIRS.
+
+    Shared by the compile, checkstyle, javadoc, and @author passes so the
+    exclusion list lives in exactly one place. Walking with os.walk lets us
+    prune directory names up-front instead of filtering paths after the fact.
+    """
+    for dirpath, dirnames, filenames in os.walk(compiler_root):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIRS]
+        for fn in filenames:
+            if fn.endswith(".java"):
+                yield Path(dirpath) / fn
+
+
 # Matches a single-line @author tag. Group 1 is the name, up to the end of
 # the line OR the closing "*/" / trailing "*" (for both single-line javadoc
 # like "/** @author X */" and multi-line "* @author X" forms). A lazy
@@ -168,7 +191,7 @@ def most_common_student_author(
     exclude = {_normalize_name(t) for t in (teachers or TEACHER_NAMES)}
     counts: Dict[str, int] = {}
     first_display: Dict[str, str] = {}
-    for path in sorted(compiler_root.rglob("*.java")):
+    for path in sorted(iter_graded_java_files(compiler_root)):
         try:
             source = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

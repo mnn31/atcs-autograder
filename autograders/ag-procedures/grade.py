@@ -35,13 +35,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from agcore import extractor  # noqa: E402
 from agcore.grader import grade   # noqa: E402  (path tweak above)
-from agcore.report import render, render_error_stub  # noqa: E402
+from agcore.report import render, render_error_stub, render_overall  # noqa: E402
 
 import config  # noqa: E402  -- local config.py next to this script
 
 
 # Lab slug used in the report filename: "<student-slug>-<LAB_SLUG>-report.pdf".
 LAB_SLUG = "procedures"
+
+# Filename of the batch-level summary written next to the per-student PDFs
+# when grading a whole directory.
+OVERALL_FILENAME = "overall.pdf"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -88,7 +92,8 @@ def _report_path(out_dir: Path, student_slug: str,
 
 
 def _grade_one(zip_path: Path, out_dir: Path, args,
-               used_slugs: set[str]) -> Path | None:
+               used_slugs: set[str],
+               roster: list | None = None) -> Path | None:
     """Grade a single zip and return the path to the resulting PDF.
 
     This function must ALWAYS produce a PDF (even if grading or rendering
@@ -117,6 +122,8 @@ def _grade_one(zip_path: Path, out_dir: Path, args,
         try:
             render_error_stub(zip_path, out_path, tb)
             print(f"[ag-procedures]   -> {out_path}  (error stub)")
+            if roster is not None:
+                roster.append((zip_path.stem, 0.0, out_path.name))
             return out_path
         except Exception:
             traceback.print_exc()
@@ -140,6 +147,8 @@ def _grade_one(zip_path: Path, out_dir: Path, args,
         try:
             render_error_stub(zip_path, out_path, tb)
             print(f"[ag-procedures]   -> {out_path}  (error stub)")
+            if roster is not None:
+                roster.append((submission.student_name, 0.0, out_path.name))
             return out_path
         except Exception:
             traceback.print_exc()
@@ -158,6 +167,9 @@ def _grade_one(zip_path: Path, out_dir: Path, args,
         # be the rich one or the degraded plain-text dump.
         print(f"[ag-procedures]   -> {out_path}  "
               f"({graded.percent:.1f}%)")
+        if roster is not None:
+            roster.append((graded.submission.student_name,
+                           graded.percent, out_path.name))
         return out_path
     except Exception as exc:
         print(f"[ag-procedures]   RENDER FAILED: {exc}", file=sys.stderr)
@@ -181,19 +193,50 @@ def main(argv: list[str] | None = None) -> int:
         print(f"input not found: {in_path}", file=sys.stderr)
         return 2
 
+    # Collect the zips to grade. Non-zip files are silently ignored so a
+    # teacher can point us at a Downloads folder (or unpacked share) that
+    # mixes zips with stray PDFs, READMEs, .DS_Store, etc. and just have
+    # it work. macOS resource-fork siblings (._Compiler.zip) are NOT real
+    # zips -- the extractor would choke on them -- so we skip those too.
+    def _is_student_zip(p: Path) -> bool:
+        return (p.is_file()
+                and p.suffix.lower() == ".zip"
+                and not p.name.startswith("._"))
+
     if in_path.is_file():
-        zips = [in_path]
+        if _is_student_zip(in_path):
+            zips = [in_path]
+        else:
+            print(f"ignoring non-zip input: {in_path.name}", file=sys.stderr)
+            zips = []
     else:
-        zips = sorted(p for p in in_path.glob("*.zip") if p.is_file())
+        zips = sorted(p for p in in_path.iterdir() if _is_student_zip(p))
     if not zips:
         print(f"no .zip files found under {in_path}", file=sys.stderr)
         return 2
 
     failed = 0
     used_slugs: set[str] = set()
+    # One entry per submission: (student_name, percent, report_filename).
+    # Populated side-effectfully by _grade_one so the summary reflects
+    # exactly what landed on disk -- including 0% rows for any submissions
+    # that emitted only an error-stub PDF.
+    roster: list[tuple[str, float, str]] = []
     for z in zips:
-        if _grade_one(z, out_dir, args, used_slugs) is None:
+        if _grade_one(z, out_dir, args, used_slugs, roster) is None:
             failed += 1
+
+    # Batch roll-up: only useful when grading more than one student at a time.
+    # For a single-zip run the per-student PDF already tells the whole story.
+    if len(zips) > 1 and roster:
+        overall_path = out_dir / OVERALL_FILENAME
+        try:
+            render_overall(roster, overall_path)
+            print(f"[ag-procedures] Batch summary: {overall_path}")
+        except Exception as exc:
+            print(f"[ag-procedures] Batch summary FAILED: {exc}",
+                  file=sys.stderr)
+
     if failed:
         print(f"[ag-procedures] Done. {failed}/{len(zips)} report(s) failed.")
         return 1

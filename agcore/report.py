@@ -102,6 +102,9 @@ def _render_full(graded: GradedSubmission, out_path: Path) -> Path:
 
     _add_header(story, graded, styles)
     _add_at_a_glance(story, graded, styles)
+    # Quick Review goes immediately after the at-a-glance banner so a
+    # teacher doing a fast pass sees the 3-5 line verdict before any table.
+    _add_quick_review(story, graded, styles)
     _add_rubric_table(story, graded, styles)
     story.append(PageBreak())
     _add_test_cases(story, graded, styles)
@@ -109,7 +112,6 @@ def _render_full(graded: GradedSubmission, out_path: Path) -> Path:
     _add_checkstyle_details(story, graded, styles)
     story.append(PageBreak())
     _add_doc_listing(story, graded, styles)
-    _add_quick_review(story, graded, styles)
     story.append(PageBreak())
     _add_hidden_test_reference(story, graded, styles)
 
@@ -286,6 +288,241 @@ def render_error_stub(zip_path: Path, out_path: Path,
         except Exception:
             pass
     return out_path
+
+
+def render_overall(rows: Sequence[Tuple[str, float, str]],
+                   out_path: Path,
+                   lab_name: str = "Procedures Lab") -> Path:
+    """Write a one-shot batch summary PDF for the teacher.
+
+    One row per student, sorted alphabetically by last name so the teacher
+    can eyeball the class at a glance. Row backgrounds darken as the score
+    drops so low-scorers jump off the page:
+
+        >= 95%   clean white
+        85-94%   light red  (minor issue)
+        75-84%   medium red (needs a look)
+        <  75%   dark red   (definitely open the full report)
+
+    @param rows sequence of (student_name, percent, report_filename)
+                tuples. report_filename is the basename of that student's
+                per-student report PDF, shown so the teacher knows which
+                file to open next to it.
+    @param out_path absolute path of the overall PDF to write.
+    @param lab_name human-readable lab name for the header.
+    @return the same out_path.
+    @postcondition a PDF exists at out_path; never raises on bad rows --
+                   the worst case is an empty/degraded PDF.
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _render_overall_full(rows, out_path, lab_name)
+    except Exception:
+        # Fallback: still emit SOMETHING so the teacher knows the batch
+        # ran even if the table render blew up.
+        tb = traceback.format_exc()
+        try:
+            _render_overall_fallback(rows, out_path, lab_name, tb)
+        except Exception:
+            out_path.with_suffix(".FAILED.txt").write_text(
+                "Overall roll-up failed.\n\n" + tb, encoding="utf-8"
+            )
+    return out_path
+
+
+def _overall_band(pct: float) -> int:
+    """Return the severity index (0..3) for the overall-row palette.
+
+    Thresholds follow the user-stated scheme: >=95 clean, <95 minor pink,
+    <85 medium red, <75 dark red.
+    """
+    if pct >= 95:
+        return 0
+    if pct >= 85:
+        return 1
+    if pct >= 75:
+        return 2
+    return 3
+
+
+def _sort_key_last_name(name: str) -> Tuple[str, str]:
+    """Sort key that puts 'John Doe' before 'Jane Smith'.
+
+    Uses the last whitespace-separated token as the surname, lowercased.
+    Falls back to the whole name if there's only one token. Returns a tuple
+    (lastname, full_name_lower) so ties break deterministically on the
+    given name.
+    """
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return ("", "")
+    parts = cleaned.split()
+    last = parts[-1].lower() if len(parts) > 1 else cleaned.lower()
+    return (last, cleaned.lower())
+
+
+def _render_overall_full(rows: Sequence[Tuple[str, float, str]],
+                         out_path: Path, lab_name: str) -> None:
+    """Primary renderer for the overall roll-up PDF."""
+    styles = _build_styles()
+    doc = SimpleDocTemplate(
+        str(out_path), pagesize=LETTER,
+        leftMargin=0.55 * inch, rightMargin=0.55 * inch,
+        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+        title="Overall Batch Report",
+    )
+
+    story: List = []
+    story.append(Paragraph(
+        "<b>ATCS - Compilers and Interpreters: Batch Summary</b>",
+        styles["h1"],
+    ))
+    story.append(Paragraph(f"<b>Lab:</b> {lab_name}", styles["body"]))
+    story.append(Paragraph(
+        "Generated: "
+        + _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        styles["meta"],
+    ))
+    story.append(Paragraph(
+        f"Students graded: <b>{len(rows)}</b>. Sorted alphabetically by "
+        "last name. Row colour darkens as the score drops so the students "
+        "who need the most attention jump off the page.",
+        styles["body"],
+    ))
+    story.append(Spacer(1, 6))
+
+    # Legend
+    legend_data = [
+        [Paragraph("<b>Score band</b>", styles["small"]),
+         Paragraph("<b>Colour</b>", styles["small"])],
+        [Paragraph(">= 95%", styles["small"]), Paragraph("", styles["small"])],
+        [Paragraph("85 - 94%", styles["small"]),
+         Paragraph("(light red)", styles["small"])],
+        [Paragraph("75 - 84%", styles["small"]),
+         Paragraph("(medium red)", styles["small"])],
+        [Paragraph("below 75%", styles["small"]),
+         Paragraph("(dark red)", styles["small"])],
+    ]
+    legend = Table(legend_data, colWidths=[1.2 * inch, 1.8 * inch])
+    legend.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), Color(0.85, 0.85, 0.85)),
+        ("BACKGROUND", (0, 1), (-1, 1), _shade_for(0)),
+        ("BACKGROUND", (0, 2), (-1, 2), _shade_for(1)),
+        ("BACKGROUND", (0, 3), (-1, 3), _shade_for(2)),
+        ("BACKGROUND", (0, 4), (-1, 4), _shade_for(3)),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story.append(legend)
+    story.append(Spacer(1, 10))
+
+    # Main roster table
+    sorted_rows = sorted(rows, key=lambda r: _sort_key_last_name(r[0]))
+    header = [
+        Paragraph("<b>#</b>", styles["small"]),
+        Paragraph("<b>Student (Last, First)</b>", styles["small"]),
+        Paragraph("<b>Score</b>", styles["small"]),
+        Paragraph("<b>Report file</b>", styles["small"]),
+    ]
+    data: List[List] = [header]
+    row_colors: List[Tuple[int, Color]] = []
+    for i, (name, pct, report) in enumerate(sorted_rows, start=1):
+        last_first = _format_last_first(name)
+        data.append([
+            Paragraph(str(i), styles["small"]),
+            Paragraph(last_first, styles["small"]),
+            Paragraph(f"{pct:.1f}%", styles["small"]),
+            Paragraph(report, styles["small"]),
+        ])
+        band = _overall_band(pct)
+        if band > 0:
+            row_colors.append((i, _shade_for(band)))
+
+    table = Table(data, colWidths=[
+        0.35 * inch, 2.5 * inch, 0.8 * inch, 3.5 * inch,
+    ], repeatRows=1)
+    style_cmds = [
+        ("BACKGROUND", (0, 0), (-1, 0), Color(0.85, 0.85, 0.85)),
+        ("BOX", (0, 0), (-1, -1), 0.5, colors.black),
+        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("ALIGN", (0, 1), (0, -1), "RIGHT"),
+        ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+    ]
+    for row_idx, colour in row_colors:
+        style_cmds.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colour))
+    table.setStyle(TableStyle(style_cmds))
+    story.append(table)
+
+    # Quick stats footer
+    if rows:
+        scores = [r[1] for r in rows]
+        avg = sum(scores) / len(scores)
+        lows = sum(1 for s in scores if s < 75)
+        mediums = sum(1 for s in scores if 75 <= s < 85)
+        highs = sum(1 for s in scores if 85 <= s < 95)
+        tops = sum(1 for s in scores if s >= 95)
+        story.append(Spacer(1, 10))
+        story.append(Paragraph(
+            f"<b>Class average:</b> {avg:.1f}%. "
+            f"&nbsp;&nbsp;>=95: <b>{tops}</b>, "
+            f"85-94: <b>{highs}</b>, "
+            f"75-84: <b>{mediums}</b>, "
+            f"&lt;75: <b>{lows}</b>.",
+            styles["body"],
+        ))
+    doc.build(story)
+
+
+def _format_last_first(name: str) -> str:
+    """Render 'Nina Petrov' as 'Petrov, Nina'."""
+    cleaned = (name or "").strip() or "Unknown Student"
+    parts = cleaned.split()
+    if len(parts) == 1:
+        return cleaned
+    return f"{parts[-1]}, {' '.join(parts[:-1])}"
+
+
+def _render_overall_fallback(rows: Sequence[Tuple[str, float, str]],
+                             out_path: Path, lab_name: str,
+                             error_tb: str) -> None:
+    """Degraded single-paragraph fallback for the overall PDF."""
+    styles = _build_styles()
+    doc = SimpleDocTemplate(
+        str(out_path), pagesize=LETTER,
+        leftMargin=0.5 * inch, rightMargin=0.5 * inch,
+        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+    )
+    story: List = [
+        Paragraph(f"<b>Batch summary ({lab_name}) -- rich table failed</b>",
+                  styles["h1"]),
+        Paragraph("Primary render threw the following error; emitting "
+                  "plain-text fallback.", styles["body"]),
+        Paragraph("<pre>" + _safe_escape(error_tb[:2000]) + "</pre>",
+                  styles["mono"]),
+        Spacer(1, 10),
+    ]
+    sorted_rows = sorted(rows, key=lambda r: _sort_key_last_name(r[0]))
+    for name, pct, report in sorted_rows:
+        story.append(Paragraph(
+            f"{_format_last_first(name)} &nbsp;&nbsp; <b>{pct:.1f}%</b> "
+            f"&nbsp;-- {report}",
+            styles["body"],
+        ))
+    doc.build(story)
+
+
+def _safe_escape(s: str) -> str:
+    """Minimal HTML escape for Paragraph content."""
+    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
 def _build_styles() -> dict:
@@ -586,7 +823,7 @@ def _add_checkstyle_details(story: List, graded: GradedSubmission,
     story.append(Paragraph(
         f"{len(violations)} violation(s) -- "
         f"showing first {len(shown)}. Grouped rule frequencies are in the "
-        "Quick Review box at the end of the report.",
+        "Quick Review box at the top of the report.",
         styles["small"],
     ))
     story.append(Spacer(1, 4))
@@ -784,6 +1021,29 @@ def _quick_review_lines(graded: GradedSubmission) -> List[str]:
                     if gi.earned < gi.item.points]
     test_fails = [t for t in graded.test_outcomes if not t.passed]
     doc_fails = [f for f in graded.proximity if not f.passed]
+
+    # Surface unparseable files up front -- this is often the root cause
+    # of a whole cluster of "role missing" notes in the rubric table, and
+    # teachers were confused when a PDF said "parseProgram missing" about
+    # a Parser.java that literally had parseProgram in it.
+    if getattr(graded, "unparsed_files", None):
+        fails = graded.unparsed_files
+        first = fails[0]
+        where = f" near line {first.line}" if first.line else ""
+        if len(fails) == 1:
+            lines.append(
+                f"One .java file could not be parsed: {first.file}{where}"
+                f" -- {first.reason}. Any rubric row that depends on this "
+                f"class falls back to text-level checks only."
+            )
+        else:
+            names = ", ".join(f.file for f in fails[:3])
+            more = "" if len(fails) <= 3 else f", +{len(fails) - 3} more"
+            lines.append(
+                f"{len(fails)} .java files could not be parsed ({names}"
+                f"{more}). Rubric rows that depend on these classes fall "
+                f"back to text-level checks only."
+            )
 
     if graded.checkstyle.error:
         lines.append(f"Checkstyle did not run cleanly: "

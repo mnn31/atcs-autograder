@@ -18,6 +18,8 @@ from typing import List, Optional
 
 import javalang
 
+from . import extractor
+
 
 JAVADOC_BLOCK_RE = re.compile(r"/\*\*(.*?)\*/", re.DOTALL)
 
@@ -75,22 +77,67 @@ class ClassRecord:
     methods: List[MethodRecord] = field(default_factory=list)
 
 
+@dataclass
+class ParseFailure:
+    """A .java file the AST parser could not read.
+
+    We surface this up to the rubric and the PDF so a single missing
+    semicolon on line 1 doesn't silently cascade into "parseProgram
+    missing" / "Parser role unfilled" notes that look like the student
+    didn't write the method at all. Teachers were finding this very
+    confusing -- the method IS in the file, it's the file that's broken.
+    """
+
+    file: str      # path relative to compiler_root, e.g. "parser/Parser.java"
+    reason: str    # short human-readable cause, e.g. "Expected ';'"
+    line: Optional[int]  # line javalang was at when it gave up, if any
+
+
 def parse_tree(compiler_root: Path) -> List[ClassRecord]:
     """Walk every .java file under compiler_root and return the class records.
 
     Parse failures are caught per-file: a file with a syntax error contributes
-    no classes but doesn't sink the whole traversal.
+    no classes but doesn't sink the whole traversal. Callers that care WHICH
+    files failed should use parse_tree_with_failures instead.
+    """
+    classes, _ = parse_tree_with_failures(compiler_root)
+    return classes
+
+
+def parse_tree_with_failures(compiler_root: Path):
+    """Like parse_tree but also returns a list of ParseFailure entries for
+    every .java file javalang refused to parse.
+
+    The rubric uses the failure list to distinguish "role genuinely
+    missing" from "role's file was unparseable" -- two very different
+    student problems that used to look identical in the PDF.
     """
     records: List[ClassRecord] = []
-    for java_file in sorted(compiler_root.rglob("*.java")):
+    failures: List[ParseFailure] = []
+    # Skip extractor.EXCLUDED_DIRS (e.g. the optional ll1parser/ directory);
+    # we never grade those files, so parsing them would just be wasted work
+    # that could also contaminate graded.classes with bogus records.
+    for java_file in sorted(extractor.iter_graded_java_files(compiler_root)):
+        rel = str(java_file.relative_to(compiler_root))
         try:
             records.extend(_parse_file(java_file, compiler_root))
-        except (javalang.parser.JavaSyntaxError, javalang.tokenizer.LexerError,
-                Exception):
-            # Skip unparseable files. The checkstyle/test-runner passes still
-            # catch the failure elsewhere.
-            continue
-    return records
+        except javalang.parser.JavaSyntaxError as exc:
+            pos = getattr(exc, "at", None)
+            line: Optional[int] = None
+            if pos is not None and getattr(pos, "position", None) is not None:
+                line = pos.position.line
+            reason = (exc.description or "syntax error").strip()
+            failures.append(ParseFailure(file=rel, reason=reason, line=line))
+        except javalang.tokenizer.LexerError as exc:
+            failures.append(ParseFailure(
+                file=rel, reason=f"lexer error: {exc}", line=None))
+        except Exception as exc:
+            # javalang occasionally raises bare Exceptions on malformed
+            # generics / incomplete declarations; capture so the PDF can
+            # still explain why the class is missing.
+            failures.append(ParseFailure(
+                file=rel, reason=f"{type(exc).__name__}: {exc}", line=None))
+    return records, failures
 
 
 def _parse_file(path: Path, compiler_root: Path) -> List[ClassRecord]:

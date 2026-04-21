@@ -17,8 +17,109 @@ from agcore import java_runner
 from agcore.grader import GradedSubmission, LabConfig, TestCase
 from agcore.javadoc_parser import ClassRecord, MethodRecord
 from agcore.proximity import ProximityFinding, check_class, check_method
+from agcore.role_resolver import RoleSpec
 from agcore.rubric import (CheckResult, RubricItem, SEVERITY_MAJOR,
                            SEVERITY_MEDIUM, SEVERITY_MINOR)
+
+
+# --------------------------------------------------------------------------- #
+# Rubric ROLES -- fuzzy class + method resolution
+# --------------------------------------------------------------------------- #
+#
+# The peer-review rubric names specific classes ("ProcedureCall",
+# "ProcedureDeclaration", etc.) and methods ("exec", "eval",
+# "declareVariable", ...). Most students follow those names, but a few
+# rename things (ProcedureDecl, Call, declareVar, parseProc, ...) and a
+# human grading the peer review would still credit them. CLASS_ROLES and
+# METHOD_ALIASES reproduce that mental step:
+#
+#   * CLASS_ROLES maps a role name -> RoleSpec. The resolver scores every
+#     parsed class on name match (exact / alias / token-containment),
+#     superclass, required methods, and directory, and returns the highest
+#     scorer. See agcore/role_resolver.py for the exact weights.
+#
+#   * METHOD_ALIASES maps (class_role, method_role) -> ordered list of
+#     acceptable method names. The first hit wins. Rubric-preferred
+#     spellings go first so students who DID use the canonical name are
+#     matched instantly.
+#
+# Result: a student who writes `class ProcCall extends Expression { public
+# int eval(Environment env) { ... } }` resolves just like the canonical
+# "ProcedureCall.eval" and still gets rubric credit.
+# --------------------------------------------------------------------------- #
+
+CLASS_ROLES = {
+    "ProcedureDeclaration": RoleSpec(
+        preferred_name="ProcedureDeclaration",
+        aliases=("ProcedureDecl", "ProcDecl", "ProcDeclaration",
+                 "ProcedureDef", "ProcedureDefinition", "ProcDef"),
+        name_tokens=[("procedure", "decl"), ("procedure", "def"),
+                     ("proc", "decl"), ("proc", "def")],
+        superclass="Statement",
+        required_methods=("exec", "execute"),
+        preferred_dir="ast",
+    ),
+    "ProcedureCall": RoleSpec(
+        preferred_name="ProcedureCall",
+        aliases=("ProcCall", "ProcedureInvocation", "ProcedureInvoke",
+                 "ProcInvocation"),
+        name_tokens=[("procedure", "call"), ("proc", "call"),
+                     ("procedure", "invoke"),
+                     ("procedure", "invocation")],
+        superclass="Expression",
+        required_methods=("eval", "evaluate"),
+        preferred_dir="ast",
+    ),
+    "Program": RoleSpec(
+        preferred_name="Program",
+        aliases=("PascalProgram", "Programme", "Root"),
+        name_tokens=[("program",)],
+        required_methods=("exec", "execute", "run"),
+        preferred_dir="ast",
+    ),
+    "Environment": RoleSpec(
+        preferred_name="Environment",
+        aliases=("Env", "Scope", "SymbolTable"),
+        name_tokens=[("environment",), ("scope",), ("symbol", "table")],
+        preferred_dir="environment",
+    ),
+    "Parser": RoleSpec(
+        preferred_name="Parser",
+        aliases=("PascalParser",),
+        name_tokens=[("parser",)],
+        preferred_dir="parser",
+    ),
+}
+
+METHOD_ALIASES = {
+    ("ProcedureDeclaration", "exec"): ("exec", "execute", "run"),
+    ("ProcedureDeclaration", "ProcedureDeclaration"): (
+        "ProcedureDeclaration", "ProcedureDecl", "ProcDecl",
+        "ProcedureDef", "ProcedureDefinition"),
+    ("ProcedureCall", "eval"): ("eval", "evaluate"),
+    ("ProcedureCall", "ProcedureCall"): (
+        "ProcedureCall", "ProcCall", "ProcedureInvocation"),
+    ("Program", "exec"): ("exec", "execute", "run"),
+    ("Program", "Program"): ("Program", "PascalProgram"),
+    ("Environment", "declareVariable"): (
+        "declareVariable", "declareVar", "declare", "defineVariable",
+        "define"),
+    ("Environment", "setVariable"): (
+        "setVariable", "setVar", "set", "assignVariable", "assign"),
+    ("Environment", "getVariable"): (
+        "getVariable", "getVar", "get", "lookupVariable", "lookup"),
+    ("Environment", "setProcedure"): (
+        "setProcedure", "setProc", "defineProcedure", "declareProcedure",
+        "registerProcedure"),
+    ("Environment", "getProcedure"): (
+        "getProcedure", "getProc", "lookupProcedure"),
+    ("Parser", "parseProgram"): (
+        "parseProgram", "parseProg"),
+    ("Parser", "parseProcedureDeclaration"): (
+        "parseProcedureDeclaration", "parseProcedure", "parseProc",
+        "parseProcedureDecl", "parseProcDecl", "parseProcDef"),
+    ("Parser", "parseFactor"): ("parseFactor",),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -106,34 +207,44 @@ MIN_METHOD_DESCRIPTION_WORDS = 0
 # --------------------------------------------------------------------------- #
 
 def proximity_rule(graded: GradedSubmission) -> List[ProximityFinding]:
-    """Apply the keyword packs above to the parsed submission."""
+    """Apply the keyword packs above to the parsed submission.
+
+    Lookups go through class_for_role / method_for_role so a renamed class
+    (e.g. "ProcCall" instead of "ProcedureCall") is still matched and its
+    docs are still scored against the right keyword pack.
+    """
     findings: List[ProximityFinding] = []
-    for cls_name, (kws, threshold) in CLASS_KEYWORDS.items():
-        cls = graded.class_by_name(cls_name)
+    # Track which concrete (class_name, method_name) pairs were already
+    # handled by the targeted METHOD_KEYWORDS pass, so the "audit the rest"
+    # pass below doesn't score the same method twice with a different
+    # configuration. We record the RESOLVED names, not the role names, so
+    # the audit comparison is apples-to-apples with cls.methods.
+    audited_pairs: set = set()
+
+    for cls_role, (kws, threshold) in CLASS_KEYWORDS.items():
+        cls = graded.class_for_role(cls_role)
         if cls is None:
-            # Missing class gets surfaced by rubric checks; skip silently here
-            # so the report doesn't double-count.
             continue
         findings.append(check_class(cls, kws, threshold))
 
-    for (cls_name, m_name), (kws, threshold) in METHOD_KEYWORDS.items():
-        method = graded.method(cls_name, m_name)
+    for (cls_role, m_role), (kws, threshold) in METHOD_KEYWORDS.items():
+        method = graded.method_for_role(cls_role, m_role)
         if method is None:
             continue
         findings.append(check_method(
             method, kws, threshold,
             min_description_words=MIN_METHOD_DESCRIPTION_WORDS,
         ))
+        audited_pairs.add((method.class_name, method.method_name))
 
     # Audit every other method: must have a javadoc, the right @param/@return
     # tags, and a non-trivial description. We deliberately do NOT require
     # @precondition/@postcondition here -- students often document pre/post
     # in prose or skip them for trivial getters, and mechanical enforcement
     # produces too many false-positive REVIEWs for a teacher to skim.
-    audited = {(cls_n, m_n) for (cls_n, m_n) in METHOD_KEYWORDS}
     for cls in graded.classes:
         for m in cls.methods:
-            if (cls.name, m.method_name) in audited:
+            if (cls.name, m.method_name) in audited_pairs:
                 continue
             findings.append(check_method(
                 m, [], 0,
@@ -148,26 +259,48 @@ def proximity_rule(graded: GradedSubmission) -> List[ProximityFinding]:
 # --------------------------------------------------------------------------- #
 
 def _has_both_ast_classes(g: GradedSubmission) -> CheckResult:
-    have_decl = g.class_by_name("ProcedureDeclaration") is not None
-    have_call = g.class_by_name("ProcedureCall") is not None
+    have_decl = g.class_for_role("ProcedureDeclaration") is not None
+    have_call = g.class_for_role("ProcedureCall") is not None
     if have_decl and have_call:
         return CheckResult(earned=10, notes="", severity=0)
     missing = []
-    if not have_decl:
-        missing.append("ProcedureDeclaration")
-    if not have_call:
-        missing.append("ProcedureCall")
-    return CheckResult(earned=0,
-                       notes=f"missing AST class: {', '.join(missing)}",
-                       severity=SEVERITY_MAJOR)
+    parse_notes: List[str] = []
+    for role, present in (("ProcedureDeclaration", have_decl),
+                          ("ProcedureCall", have_call)):
+        if present:
+            continue
+        missing.append(role)
+        fail = g.failure_for_role(role)
+        if fail is not None:
+            where = f" near line {fail.line}" if fail.line else ""
+            parse_notes.append(
+                f"{fail.file} failed to parse{where}: {fail.reason}")
+    # If BOTH the missing roles are explained by parse failures, award
+    # partial credit (3/10) -- the class is almost certainly present, we
+    # just can't see it. Zero credit for a truly absent class; half
+    # credit for a syntactically broken one that still has the right
+    # file name on disk.
+    earned = 3.0 if parse_notes and len(parse_notes) == len(missing) else 0.0
+    note = f"missing AST class (or unrecognised role): {', '.join(missing)}"
+    if parse_notes:
+        note = ("; ".join(parse_notes)
+                + " -- structural checks skipped for these classes")
+    severity = (SEVERITY_MEDIUM if earned > 0 else SEVERITY_MAJOR)
+    return CheckResult(earned=earned, notes=note, severity=severity)
 
 
 def _class_header_tags(g: GradedSubmission,
-                       class_name: str, points: float) -> CheckResult:
-    """Check class-level javadoc includes @author + @version + a summary."""
-    cls = g.class_by_name(class_name)
+                       class_role: str, points: float) -> CheckResult:
+    """Check class-level javadoc includes @author + @version + a summary.
+
+    class_role is a rubric role name ("ProcedureCall") not a literal class
+    name -- g.class_for_role handles student renames.
+    """
+    cls = g.class_for_role(class_role)
     if cls is None:
-        return CheckResult(earned=0, notes=f"{class_name} not found",
+        return CheckResult(earned=0,
+                           notes=f"{class_role} not found (no class matched "
+                                 f"the expected role)",
                            severity=SEVERITY_MAJOR)
     if cls.javadoc is None:
         return CheckResult(earned=0, notes="no class javadoc",
@@ -197,14 +330,16 @@ def _class_header_tags(g: GradedSubmission,
                        notes="; ".join(notes), severity=severity)
 
 
-def _class_methods_tags(g: GradedSubmission, class_name: str,
+def _class_methods_tags(g: GradedSubmission, class_role: str,
                         points: float) -> CheckResult:
     """Check every method in the named class has a javadoc with @param (for
     each parameter) and @return (if non-void).
     """
-    cls = g.class_by_name(class_name)
+    cls = g.class_for_role(class_role)
     if cls is None:
-        return CheckResult(earned=0, notes=f"{class_name} not found",
+        return CheckResult(earned=0,
+                           notes=f"{class_role} not found (no class matched "
+                                 f"the expected role)",
                            severity=SEVERITY_MAJOR)
     if not cls.methods:
         return CheckResult(earned=points, notes="no methods",
@@ -221,7 +356,8 @@ def _class_methods_tags(g: GradedSubmission, class_name: str,
             if have_params < len(m.params):
                 problems.append(
                     f"@param x{len(m.params) - have_params} missing")
-        if m.return_type not in ("void", "") and m.method_name != class_name:
+        # m.method_name == cls.name means this is a constructor -- no @return.
+        if m.return_type not in ("void", "") and m.method_name != cls.name:
             if not m.javadoc.tags_named("@return"):
                 problems.append("@return missing")
         if not m.javadoc.description.strip():
@@ -243,9 +379,9 @@ def _class_methods_tags(g: GradedSubmission, class_name: str,
 
 
 def _procdecl_extends_and_exec(g: GradedSubmission) -> CheckResult:
-    cls = g.class_by_name("ProcedureDeclaration")
+    cls = g.class_for_role("ProcedureDeclaration")
     if cls is None:
-        return CheckResult(earned=0, notes="class missing",
+        return CheckResult(earned=0, notes="ProcedureDeclaration role missing",
                            severity=SEVERITY_MAJOR)
     score = 0.0
     notes: List[str] = []
@@ -253,7 +389,7 @@ def _procdecl_extends_and_exec(g: GradedSubmission) -> CheckResult:
         score += 5
     else:
         notes.append(f"does not extend Statement (extends {cls.superclass!r})")
-    exec_method = g.method("ProcedureDeclaration", "exec")
+    exec_method = g.method_for_role("ProcedureDeclaration", "exec")
     if exec_method is None:
         notes.append("no exec method")
     else:
@@ -274,15 +410,18 @@ def _procdecl_extends_and_exec(g: GradedSubmission) -> CheckResult:
 
 
 def _procdecl_params_and_body(g: GradedSubmission) -> CheckResult:
-    cls = g.class_by_name("ProcedureDeclaration")
+    cls = g.class_for_role("ProcedureDeclaration")
     if cls is None:
-        return CheckResult(earned=0, notes="class missing",
+        return CheckResult(earned=0, notes="ProcedureDeclaration role missing",
                            severity=SEVERITY_MAJOR)
     # Look for a constructor taking (String name, List<String> params, Statement body)
     score = 0.0
     notes: List[str] = []
+    # A Java constructor's method_name is always the class's own name. Since
+    # the resolver may have matched a renamed class, use cls.name (not the
+    # role name) to find the constructor.
     ctor = next((m for m in cls.methods
-                 if m.method_name == "ProcedureDeclaration"), None)
+                 if m.method_name == cls.name), None)
     if ctor is None:
         notes.append("no constructor found")
     else:
@@ -294,7 +433,7 @@ def _procdecl_params_and_body(g: GradedSubmission) -> CheckResult:
             notes.append(f"constructor has {len(ctor.params)} params "
                          f"(expected >= 2)")
     # Look for a field list/params and a body.
-    src = _class_source(g, "ProcedureDeclaration")
+    src = _role_source(g, "ProcedureDeclaration")
     if src is None:
         return CheckResult(earned=round(score, 1), notes="; ".join(notes),
                            severity=SEVERITY_MAJOR)
@@ -326,9 +465,9 @@ def _proccall_extends_and_eval(g: GradedSubmission) -> CheckResult:
     clearly wrong no matter what the source says; we cap the rubric
     score so the grep can't inflate it.
     """
-    cls = g.class_by_name("ProcedureCall")
+    cls = g.class_for_role("ProcedureCall")
     if cls is None:
-        return CheckResult(earned=0, notes="class missing",
+        return CheckResult(earned=0, notes="ProcedureCall role missing",
                            severity=SEVERITY_MAJOR)
     score = 0.0
     notes: List[str] = []
@@ -338,12 +477,12 @@ def _proccall_extends_and_eval(g: GradedSubmission) -> CheckResult:
         score += 2
     else:
         notes.append(f"does not extend Expression (extends {cls.superclass!r})")
-    eval_m = g.method("ProcedureCall", "eval")
+    eval_m = g.method_for_role("ProcedureCall", "eval")
     if eval_m is None:
         notes.append("no eval method")
     else:
         score += 1
-        src = _class_source(g, "ProcedureCall") or ""
+        src = _role_source(g, "ProcedureCall") or ""
         if "getProcedure" in src:
             score += 1
         else:
@@ -395,9 +534,9 @@ def _proccall_extends_and_eval(g: GradedSubmission) -> CheckResult:
 
 
 def _program_class(g: GradedSubmission) -> CheckResult:
-    cls = g.class_by_name("Program")
+    cls = g.class_for_role("Program")
     if cls is None:
-        return CheckResult(earned=0, notes="no Program class",
+        return CheckResult(earned=0, notes="no Program class (role unfilled)",
                            severity=SEVERITY_MAJOR)
     score = 0.0
     notes: List[str] = []
@@ -406,12 +545,16 @@ def _program_class(g: GradedSubmission) -> CheckResult:
     else:
         notes.append(f"Program should NOT extend Statement "
                      f"(currently extends {cls.superclass!r})")
-    # Should hold procedure list + a main Statement.
-    src = _class_source(g, "Program") or ""
-    if "ProcedureDeclaration" in src:
+    # Should hold procedure list + a main Statement. Use the resolved
+    # ProcedureDeclaration class name so renamed classes (ProcedureDecl,
+    # ProcDecl, ...) still get credit when referenced from Program.
+    src = _role_source(g, "Program") or ""
+    pd_cls = g.class_for_role("ProcedureDeclaration")
+    pd_name = pd_cls.name if pd_cls is not None else "ProcedureDeclaration"
+    if pd_name in src:
         score += 1
     else:
-        notes.append("no ProcedureDeclaration field")
+        notes.append(f"no {pd_name} field")
     if "Statement" in src:
         score += 1
     else:
@@ -423,25 +566,60 @@ def _program_class(g: GradedSubmission) -> CheckResult:
 
 
 def _parse_program_and_procedure(g: GradedSubmission) -> CheckResult:
-    parse_prog = g.method("Parser", "parseProgram")
-    parse_proc = (g.method("Parser", "parseProcedure")
-                  or g.method("Parser", "parseProcedureDeclaration"))
+    parse_prog = g.method_for_role("Parser", "parseProgram")
+    parse_proc = g.method_for_role("Parser", "parseProcedureDeclaration")
     score = 0.0
     notes: List[str] = []
-    if parse_prog is None:
-        notes.append("parseProgram missing")
-    else:
+
+    # Text-level fallback. If javalang choked on Parser.java, the AST
+    # lookups above return None even when the methods are visibly in
+    # the file. Confirm presence with a source grep so we don't mark
+    # "parseProgram missing" on a file that literally has it -- that
+    # was the bug teachers kept hitting with students who forgot the
+    # semicolon after `package parser`.
+    src = _role_source(g, "Parser") or ""
+    unparseable = _role_unparseable_note(g, "Parser")
+
+    prog_aliases = g.config.method_aliases.get(
+        ("Parser", "parseProgram"), ("parseProgram",))
+    proc_aliases = g.config.method_aliases.get(
+        ("Parser", "parseProcedureDeclaration"),
+        ("parseProcedureDeclaration",))
+    prog_by_grep = any(f"{a}(" in src or f"{a} (" in src for a in prog_aliases)
+    proc_by_grep = any(f"{a}(" in src or f"{a} (" in src for a in proc_aliases)
+
+    if parse_prog is not None:
         score += 5
-    if parse_proc is None:
-        notes.append("parseProcedure(Declaration) missing")
+    elif prog_by_grep:
+        score += 5
+        notes.append("parseProgram found via text match "
+                     "(AST view unavailable)")
     else:
+        notes.append("parseProgram missing")
+
+    if parse_proc is not None:
         score += 3
+    elif proc_by_grep:
+        score += 3
+        notes.append("parseProcedureDeclaration found via text match "
+                     "(AST view unavailable)")
+    else:
+        notes.append("parseProcedure(Declaration) missing")
+
     # If tests passed at least the simple/args ones, give the final 2.
+    # When compile failed we can't tell whether the methods actually work
+    # or not -- don't penalise this sub-score for what's really a build
+    # problem. Rubric row 14 (compile/test) already captures it.
     passed_names = {t.case.name for t in g.test_outcomes if t.passed}
     if {"test01_simple", "test02_args"} & passed_names:
         score += 2
-    elif parse_prog and parse_proc:
+    elif not g.compile_result.success:
+        notes.append("simple/args tests not verified (compile failed)")
+    elif (parse_prog or prog_by_grep) and (parse_proc or proc_by_grep):
         notes.append("method present but simple tests failed")
+
+    if unparseable:
+        notes.insert(0, unparseable)
     severity = 0 if score >= 10 else (SEVERITY_MEDIUM if score >= 5
                                       else SEVERITY_MAJOR)
     return CheckResult(earned=round(score, 1),
@@ -449,19 +627,25 @@ def _parse_program_and_procedure(g: GradedSubmission) -> CheckResult:
 
 
 def _env_hierarchy(g: GradedSubmission) -> CheckResult:
-    cls = g.class_by_name("Environment")
+    cls = g.class_for_role("Environment")
     if cls is None:
-        return CheckResult(earned=0, notes="Environment class missing",
+        return CheckResult(earned=0, notes="Environment role missing",
                            severity=SEVERITY_MAJOR)
-    src = _class_source(g, "Environment") or ""
+    src = _role_source(g, "Environment") or ""
     score = 0.0
     notes: List[str] = []
-    if "parent" in src and "Environment" in src:
+    # We look for the literal word "Environment" in the source even when the
+    # class is renamed: an Environment-like class almost always still imports
+    # or references the canonical superclass/parent type name somewhere.
+    if "parent" in src and ("Environment" in src or cls.name in src):
         score += 3
     else:
         notes.append("no parent Environment reference")
+    # Constructors: java constructor name == class name, so we count
+    # constructors by comparing against the resolved class name, not the
+    # role name.
     has_two_ctors = sum(1 for m in cls.methods
-                        if m.method_name == "Environment") >= 2
+                        if m.method_name == cls.name) >= 2
     if has_two_ctors:
         score += 3
     else:
@@ -476,7 +660,7 @@ def _env_hierarchy(g: GradedSubmission) -> CheckResult:
 def _env_declare_set_get(g: GradedSubmission) -> CheckResult:
     required = ["declareVariable", "setVariable", "getVariable"]
     present = [m for m in required
-               if g.method("Environment", m) is not None]
+               if g.method_for_role("Environment", m) is not None]
     score = round(4 * len(present) / len(required), 1)
     missing = [m for m in required if m not in present]
     severity = 0 if not missing else (SEVERITY_MINOR if len(missing) == 1
@@ -488,26 +672,38 @@ def _env_declare_set_get(g: GradedSubmission) -> CheckResult:
 
 
 def _parser_procedure_and_factor(g: GradedSubmission) -> CheckResult:
-    src = _class_source(g, "Parser") or ""
+    # _role_source already falls back to reading the raw file when
+    # javalang couldn't parse it, so text-level greps still work even
+    # when the Parser class is invisible to the AST pass. If the fallback
+    # fired, prepend an explanatory note so the teacher understands the
+    # structural signals below are best-effort.
+    src = _role_source(g, "Parser") or ""
     score = 0.0
     notes: List[str] = []
+    unparseable = _role_unparseable_note(g, "Parser")
     if '"PROCEDURE"' in src:
         score += 4
     else:
         notes.append('parser does not mention the "PROCEDURE" keyword')
-    # parseFactor should handle id(args) as a procedure call.
-    if "ProcedureCall" in src and "parseFactor" in src:
+    # parseFactor should handle id(args) as a procedure call. Use the
+    # resolved ProcedureCall role name so renamed classes (ProcCall,
+    # ProcedureInvocation, ...) still get the grep credit.
+    pc_cls = g.class_for_role("ProcedureCall")
+    pc_name = pc_cls.name if pc_cls is not None else "ProcedureCall"
+    if pc_name in src and "parseFactor" in src:
         score += 4
-    elif "ProcedureCall" in src:
+    elif pc_name in src:
         score += 2
-        notes.append("parseFactor does not appear to construct ProcedureCall")
+        notes.append(f"parseFactor does not appear to construct {pc_name}")
     else:
-        notes.append("parseFactor does not construct a ProcedureCall")
+        notes.append(f"parseFactor does not construct a {pc_name}")
     passed_names = {t.case.name for t in g.test_outcomes if t.passed}
     if "test04_return" in passed_names or "test05_recursion" in passed_names:
         score += 2
-    elif "ProcedureCall" in src:
+    elif pc_name in src:
         notes.append("procedure-call-heavy tests (return/recursion) failed")
+    if unparseable:
+        notes.insert(0, unparseable)
     severity = 0 if score >= 10 else (SEVERITY_MEDIUM if score >= 5
                                       else SEVERITY_MAJOR)
     return CheckResult(earned=round(score, 1),
@@ -583,16 +779,30 @@ def _testing_parsertest_7_and_8(g: GradedSubmission) -> CheckResult:
                        severity=severity)
 
 
-def _class_source(g: GradedSubmission, class_name: str) -> str | None:
-    """Helper: read the source file that defines a given class."""
-    cls = g.class_by_name(class_name)
-    if cls is None:
-        return None
-    path = g.submission.compiler_root / cls.file
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
+def _role_source(g: GradedSubmission, class_role: str) -> str | None:
+    """Read the source file that defines the class fulfilling class_role.
+
+    Delegates to GradedSubmission.source_for_role, which first tries the
+    AST-resolved class's file path and then falls back to any file in
+    g.unparsed_files whose basename matches the role. This fallback is
+    what keeps text-level grep checks honest when a student's file has
+    a syntax error that blocks javalang but the method bodies we are
+    scanning for are still right there in the source.
+    """
+    return g.source_for_role(class_role)
+
+
+def _role_unparseable_note(g: GradedSubmission, class_role: str) -> str:
+    """If the role's file is in g.unparsed_files, build a note fragment
+    that explains "this file didn't parse" rather than let the grader
+    pretend the class simply doesn't exist.
+    """
+    fail = g.failure_for_role(class_role)
+    if fail is None:
+        return ""
+    where = f" near line {fail.line}" if fail.line else ""
+    return (f"{fail.file} could not be parsed{where}: {fail.reason} "
+            f"-- AST-level checks for this role were skipped")
 
 
 # --------------------------------------------------------------------------- #
@@ -755,4 +965,6 @@ def build_config(java_exe: str = "java",
         java_exe=java_exe,
         javac_exe=javac_exe,
         main_class="parser.Parser",
+        class_roles=CLASS_ROLES,
+        method_aliases=METHOD_ALIASES,
     )
