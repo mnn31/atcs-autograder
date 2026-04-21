@@ -954,6 +954,15 @@ def _testing_parsertest_7_and_8(g: GradedSubmission) -> CheckResult:
             continue
         score += 2.0  # presence credit
         test_path = matches[0]
+        # Use whichever main class the probe in _run_test_case has
+        # already locked in; falling back to the first detected
+        # candidate, then to the lab default. This mirrors the hidden
+        # test runner so a student who keeps main in ParserTester
+        # still gets the parserTest7/8 row evaluated correctly.
+        main_class = (g.selected_main_class
+                      or (g.main_class_candidates[0]
+                          if g.main_class_candidates
+                          else g.config.main_class))
         try:
             run = java_runner.run_parser(
                 compiler_root=compiler_root,
@@ -962,7 +971,7 @@ def _testing_parsertest_7_and_8(g: GradedSubmission) -> CheckResult:
                 java_exe=g.config.java_exe,
                 timeout=30,
                 stdin_text=None,
-                main_class=g.config.main_class,
+                main_class=main_class,
             )
         except Exception as exc:   # defensive; must not kill the rubric
             notes.append(f"{fname} runner raised: {exc}")

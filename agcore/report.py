@@ -1069,6 +1069,23 @@ def _quick_review_lines(graded: GradedSubmission) -> List[str]:
         lines.append(f"Functional tests: all "
                      f"{len(graded.test_outcomes)} passed.")
 
+    # Surface which main class ran the tests. Teachers sometimes need to
+    # know the student put main in an unusual place -- this also flags the
+    # case where we fell through every candidate without finding one that
+    # loaded, which almost certainly means a runtime-incompatible entry.
+    selected = getattr(graded, "selected_main_class", None)
+    candidates = getattr(graded, "main_class_candidates", None) or []
+    if graded.compile_result.success and selected:
+        if len(candidates) > 1 and candidates[0] != selected:
+            # We had to fall back off the top-ranked candidate.
+            lines.append(
+                f"Main-class probe: ran tests against {selected} "
+                f"(top candidate {candidates[0]} did not load)."
+            )
+        elif selected not in ("parser.Parser",):
+            # Non-default entry point worth calling out.
+            lines.append(f"Main-class probe: tests ran against {selected}.")
+
     if doc_fails:
         egregious = sum(1 for f in doc_fails if f.severity >= 3)
         lines.append(

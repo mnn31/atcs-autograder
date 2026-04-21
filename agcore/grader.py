@@ -99,6 +99,15 @@ class GradedSubmission:
     # unparseable" instead.
     unparsed_files: List[javadoc_parser.ParseFailure] = field(
         default_factory=list)
+    # Fully-qualified main-class candidates ordered from most to least
+    # likely. Students put their `public static void main(String[])` in
+    # different places (parser.Parser, parser.ParserTester, Main, ...),
+    # so the grader probes each candidate when running tests rather than
+    # assuming a single hardcoded location.
+    main_class_candidates: List[str] = field(default_factory=list)
+    # Cached choice: the first candidate that actually runs on test 1.
+    # Populated lazily so we only probe once per submission.
+    selected_main_class: Optional[str] = None
     # Memoisation for class_for_role so each rubric checker doesn't re-score
     # every class. Populated lazily on first lookup per role name.
     _role_cache: Dict[str, Optional[javadoc_parser.ClassRecord]] = field(
@@ -294,10 +303,23 @@ def grade(zip_path: Path, config: LabConfig,
     compile_result = java_runner.compile_project(
         submission.compiler_root, javac_exe=config.javac_exe,
     )
+    # Find every class that could be the student's entry point. We do this
+    # BEFORE running tests so _run_test_case can iterate candidates if the
+    # top pick dies with "no main method". Students put main in very
+    # different places (parser.Parser, parser.ParserTester, Main, ...) and
+    # a single hardcoded class name was the biggest source of "tests all
+    # failed, student is correct" false-failures.
+    main_candidates = java_runner.detect_main_candidates(
+        classes, unparsed_files, submission.compiler_root)
+    # Fall back to config.main_class if detection found nothing -- the lab
+    # author at least set that as a default expectation.
+    if not main_candidates:
+        main_candidates = [config.main_class]
     graded = GradedSubmission(
         config=config, submission=submission, checkstyle=checkstyle,
         classes=classes, compile_result=compile_result,
         unparsed_files=unparsed_files,
+        main_class_candidates=main_candidates,
     )
 
     # Functional test pass -- each test is isolated so one failure doesn't
@@ -329,21 +351,63 @@ def grade(zip_path: Path, config: LabConfig,
 
 
 def _run_test_case(case: TestCase, graded: GradedSubmission) -> TestOutcome:
-    """Compile must succeed before we attempt to run any tests."""
+    """Compile must succeed before we attempt to run any tests.
+
+    Main-class probe: if we haven't locked a main class yet, try each
+    candidate in order; the first whose JVM launch doesn't immediately
+    fail with "no such class / no main method" is locked in for this
+    and every subsequent test. The probe uses the current test as its
+    input so the result is still a real test outcome -- we don't waste
+    a JVM launch on a contrived probe.
+    """
     if not graded.compile_result.success or not graded.compile_result.classes_dir:
         return TestOutcome(
             case=case, passed=False, actual_stdout=[], stderr="",
             error="code did not compile; see compile errors in the main report",
         )
-    run = java_runner.run_parser(
-        compiler_root=graded.submission.compiler_root,
-        classes_dir=graded.compile_result.classes_dir,
-        test_file=case.source_path,
-        java_exe=graded.config.java_exe,
-        timeout=case.timeout,
-        stdin_text=case.stdin_text,
-        main_class=graded.config.main_class,
-    )
+
+    # Candidates to try. Once one works, graded.selected_main_class
+    # caches the winner so subsequent tests go straight to it.
+    if graded.selected_main_class is not None:
+        candidates = [graded.selected_main_class]
+    else:
+        candidates = list(graded.main_class_candidates) or [
+            graded.config.main_class]
+
+    last_run = None
+    last_candidate = candidates[0] if candidates else graded.config.main_class
+    for candidate in candidates:
+        run = java_runner.run_parser(
+            compiler_root=graded.submission.compiler_root,
+            classes_dir=graded.compile_result.classes_dir,
+            test_file=case.source_path,
+            java_exe=graded.config.java_exe,
+            timeout=case.timeout,
+            stdin_text=case.stdin_text,
+            main_class=candidate,
+        )
+        last_run, last_candidate = run, candidate
+        # If the JVM couldn't locate this class, try the next candidate.
+        # Anything else (real stdout, a parse error in student code, a
+        # timeout, ...) counts as "this main is the student's intent"
+        # and we lock it in.
+        if run.error is None and not run.timed_out and \
+                java_runner._looks_like_jvm_class_load_error(run.stderr):
+            continue
+        graded.selected_main_class = candidate
+        break
+
+    run = last_run
+    if run is None:
+        return TestOutcome(
+            case=case, passed=False, actual_stdout=[], stderr="",
+            error="no runnable main class found in submission",
+        )
+    if graded.selected_main_class is None:
+        # Every candidate failed the class-load probe. Record the last one
+        # tried so the teacher at least sees which classes we attempted.
+        graded.selected_main_class = last_candidate
+
     if run.timed_out:
         return TestOutcome(
             case=case, passed=False, actual_stdout=[], stderr=run.stderr,
