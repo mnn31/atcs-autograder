@@ -413,9 +413,11 @@ def _class_methods_tags(g: GradedSubmission, class_role: str,
         # or a constructor `ClassName(...)` before a `{`. Count lines that look
         # like method decls (have parens followed by a { on the same or next
         # non-blank line).
+        # Non-f-string raw regex: use single { here. (Sibling grep helpers
+        # that *are* f-strings escape it as {{ on purpose.)
         method_like = len(re.findall(
             r"(?m)^\s*(?:public|private|protected|static|\s)*[\w<>\[\],\s]+\s"
-            r"+\w+\s*\([^)]*\)\s*(?:throws[^{{]*)?\{{", src))
+            r"+\w+\s*\([^)]*\)\s*(?:throws[^{]*)?\{", src))
         if method_like == 0:
             return CheckResult(
                 earned=points, notes=(unparseable + "; no methods visible")
