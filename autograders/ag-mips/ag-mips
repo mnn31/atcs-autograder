@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Convenience wrapper: pipe ag-mips STUDENT.zip straight through python.
+# Works from anywhere as long as the script itself hasn't moved.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$HERE/grade.py" "$@"
