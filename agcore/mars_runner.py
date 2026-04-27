@@ -112,11 +112,15 @@ def run_asm(
             stdout="", stderr="", returncode=-1, timed_out=True,
             assemble_error=False, error=None,
         )
-    # ae1 was passed: a returncode of 1 with no stdout means "assembler
-    # rejected the file before we ever ran simulation". MARS otherwise
-    # exits 0 on a clean run. Any other non-zero is treated as "ran
-    # but errored at runtime" -- e.g. a trap from div-by-zero.
-    assemble_error = proc.returncode == 1 and not proc.stdout.strip()
+    # `ae1` was passed: a returncode of 1 means MARS's assembler rejected
+    # the file before any simulation happened. MARS otherwise exits 0 --
+    # even runtime traps (div by zero, out-of-bounds memory) come back
+    # as exit 0 with the trap message routed through stdout. Any other
+    # non-zero would indicate a JVM-level failure, not student code.
+    # NOTE: the assembler writes its "Error in <file> line N" message
+    # to STDOUT, not stderr, so we MUST NOT condition on stdout being
+    # empty here.
+    assemble_error = proc.returncode == 1
     return MarsResult(
         stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode,
         timed_out=False, assemble_error=assemble_error, error=None,
