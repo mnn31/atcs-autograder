@@ -17,6 +17,15 @@ Maps the Lab 5 (MIPS) handout to a concrete rubric:
                        we score the average #-line ratio across the
                        student's matched files.
 
+There is no separate "hidden test suite" in this lab the way there
+is for Procedures (where tests are PASCAL programs run against a
+student-written interpreter). Here each exercise IS a deliverable
+.asm file; the autograder verifies that file directly by piping
+sample input in and looking for the right output. Multiple
+verification cases per exercise (e.g. evenodd is checked with both
+an even and an odd input) are just multiple eyes on the same
+deliverable, not separate tests.
+
 Each rubric row is intentionally independent of every other row -- a
 student missing the array program still gets full credit for the
 even/odd one, and so on. This mirrors the airtightness principle of
@@ -133,12 +142,18 @@ EXERCISES = {
 
 
 # --------------------------------------------------------------------------- #
-# Hidden test specs per exercise
+# Per-exercise verification cases
 # --------------------------------------------------------------------------- #
 #
-# Each spec produces ONE MipsTestOutcome. Multiple specs per role are
-# fine (e.g. evenodd has two specs: one for each parity). A row earns
-# behavioural credit proportional to how many specs pass.
+# Each MipsTestSpec is one verification CASE for an exercise -- the
+# autograder pipes `stdin_text` in and looks for `expected_substrings`
+# in stdout, in order, case-insensitively. Multiple cases per
+# exercise simply exercise the same .asm with different inputs (e.g.
+# evenodd is checked with even, odd, and zero) so we have more than
+# one data point on whether the exercise actually works. They are NOT
+# separate hidden tests; the deliverable IS the .asm file, and the
+# rubric row's behavioural sub-score is the proportion of cases that
+# pass.
 # --------------------------------------------------------------------------- #
 
 ROLE_TESTS = {
@@ -264,17 +279,17 @@ def _scored_exercise_row(role: str, points: float,
     """Build a generic per-exercise rubric checker.
 
     Score model (independent per row):
-      file present              -> 25% of points
-      header doc with @author   -> 25% of points
-      tests pass (proportional) -> 50% of points
+      file present                              -> 25% of points
+      header doc with @author + @version        -> 25% of points
+      verification cases pass (proportional)    -> 50% of points
 
     @param role rubric role id, must appear in EXERCISES + ROLE_TESTS.
     @param points total points the rubric row is worth.
-    @param min_pass_for_full if >= 0, the test arm awards full 50%
-                             when at least this many specs pass (the
-                             rest is treated as bonus). Used for
-                             multi-spec rows where the student only
-                             needs to fulfil ONE interpretation
+    @param min_pass_for_full if >= 0, the behavioural arm awards full
+                             50% when at least this many verification
+                             cases pass (the rest is treated as
+                             bonus). Used for rows where the student
+                             only needs to fulfil ONE interpretation
                              (e.g. ex4 may be multiplication OR
                              addition; either is enough).
     """
@@ -326,21 +341,22 @@ def _scored_exercise_row(role: str, points: float,
         if min_pass_for_full >= 0 and passed >= min_pass_for_full:
             score += test_pts
             if passed < total:
-                # Note the passes that didn't apply (informational only).
+                # Note the cases that didn't apply (informational only).
                 fail_names = ", ".join(t.spec.name for t in outcomes
                                        if not t.passed)
                 notes.append(
-                    f"tests passed: {passed}/{total} (full credit since "
-                    f">= {min_pass_for_full}); not-passing: {fail_names}")
+                    f"verification cases passed: {passed}/{total} "
+                    f"(full credit since >= {min_pass_for_full}); "
+                    f"not-passing: {fail_names}")
         else:
             score += test_pts * (passed / total)
             if passed < total:
                 fail_names = ", ".join(t.spec.name for t in outcomes
                                        if not t.passed)
-                notes.append(f"tests passed: {passed}/{total}; "
+                notes.append(f"verification cases passed: {passed}/{total}; "
                              f"failing: {fail_names}")
-        # First failed test's error -- helps the teacher see what to look
-        # at without flipping to the appendix.
+        # First failed case's error -- helps the teacher see what to look
+        # at without flipping to the per-exercise detail section.
         first_fail = next((t for t in outcomes if not t.passed), None)
         if first_fail and first_fail.error:
             notes.append(f"first fail: {first_fail.error}")

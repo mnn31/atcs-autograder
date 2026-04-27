@@ -13,10 +13,20 @@ Adding another lab is a matter of writing a new `config.py` + test
 suite next to those.
 
 Every student submission is a `.zip`. The tool produces a colour-coded
-PDF "blanksheet" report that mirrors the peer checkoff rubric, runs a
-hidden functional test suite, and finishes with a quick review box and
+PDF "blanksheet" report that mirrors the peer checkoff rubric, walks
+each deliverable to verify it has the required documentation and
+behaves as the lab specifies, and finishes with a quick review box and
 overall score. Both labs share the same banner / Quick Review / rubric
 layout so a teacher who can skim one can skim the other.
+
+The two labs answer slightly different questions:
+- **Procedures** — does the student's interpreter correctly run a
+  hidden test suite of PASCAL programs? (Tests are inputs to a
+  student-built tool, so a "hidden test suite" makes sense.)
+- **MIPS** — for each lab exercise, did the student deliver an `.asm`
+  with proper documentation that produces the expected output?
+  (The exercises ARE the deliverables; there is no separate "hidden
+  test suite" — the autograder verifies each exercise directly.)
 
 The blanksheet is **deliberately identical** across students so the
 teacher can scan for red cells and move on.
@@ -298,18 +308,21 @@ differ because they grade fundamentally different things.
    any detail table.
 3. **Rubric** — one row per rubric line, severity-shaded. Partial-
    credit rows are tagged **REVIEW** so a human can confirm.
-4. **Per-test detail** —
+4. **Per-deliverable detail** —
    - Procedures: an "Internal Functional Test Cases" table for the
-     ten hidden PASCAL programs.
-   - MIPS: an `.asm` file inventory + a per-exercise stdin / expected
-     / actual stdout appendix.
+     ten hidden PASCAL programs run against the student's parser.
+   - MIPS: an `.asm` file inventory + a per-exercise verification
+     section showing the stdin we piped in, what we looked for, and
+     what the student's program printed.
 5. **(Procedures only) Checkstyle Details** — up to 20 concrete
    violations (file, line, rule, message).
 6. **(Procedures only) Documentation Review** — one row per class
    and per method.
-7. **Appendix: Hidden Test Suite** (final pages) — for each hidden
-   test, the expected behaviour and the student's *actual* output
-   side-by-side. Green cell on pass, red cell on fail.
+7. **(Procedures only) Appendix: Hidden Test Suite** — for each
+   hidden PASCAL program, the expected behaviour and the student's
+   *actual* output side-by-side. (MIPS has no equivalent; the
+   per-exercise detail in section 4 already shows the same
+   information for each deliverable.)
 
 A typical Procedures report runs 10–14 pages; MIPS reports run 3–5
 pages because there's no per-method documentation listing.
@@ -427,6 +440,10 @@ rows.
 
 ## How MIPS scoring works
 
+The rubric just goes exercise-by-exercise. There's no separate test
+layer: each row's job is "for this exercise, did the student deliver
+a properly documented `.asm` that produces the expected output?".
+
 Per-exercise rubric rows are split:
 
 - **25%** for the file being present in the submission.
@@ -438,7 +455,12 @@ Per-exercise rubric rows are split:
   Substring matching (rather than exact line equality) means students
   who decorate output with prompts ("Enter a number: ") still pass.
 
-The rubric also includes:
+Some exercises run multiple verification cases (e.g. evenodd is
+exercised with both an even and an odd input). These are not
+separate tests, just multiple eyes on the same deliverable. The
+behavioural sub-score is the proportion of cases that pass.
+
+Beyond the per-exercise rows the rubric also includes:
 
 - **Header docs across all .asm files** — proportional credit.
 - **Comment density** — average `#`-lines / total-non-blank-lines
@@ -465,13 +487,18 @@ The rubric also includes:
 
 ### MIPS
 
-- Each `MipsTestSpec` in `autograders/ag-mips/config.py` lists its
-  expected substrings. Add or remove substrings to make a row
-  stricter or looser. Order matters (substrings must appear in
-  stdout in the listed order).
-- The `min_pass_for_full` arg on `_scored_exercise_row(...)` lets a
-  row earn full credit when at least N specs pass — used for
-  Exercise 4 because either multiplication OR addition is acceptable.
+- Each `MipsTestSpec` in `autograders/ag-mips/config.py` is one
+  verification case for an exercise — its `expected_substrings` list
+  is what stdout must contain (in order, case-insensitively). Add or
+  remove substrings to make a case stricter or looser.
+- Add or remove cases per exercise to widen or narrow the
+  verification. Single-case exercises (`ex2_simple`, `next_array`)
+  rely on one input; multi-case exercises (`ex5_evenodd`,
+  `ex6_loops`) exercise the same `.asm` with multiple inputs.
+- The `min_pass_for_full` arg on `_scored_exercise_row(...)` lets an
+  exercise earn full credit when at least N cases pass — used for
+  Exercise 4 because either multiplication OR addition is
+  acceptable, so passing one of the two is enough.
 - Comment-density thresholds live in `_comment_density_row`.
 
 ---

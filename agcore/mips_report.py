@@ -4,10 +4,16 @@ Render a MipsGradedSubmission into a colour-coded PDF blanksheet.
 Visually identical to the Procedures-lab report (same banner colours,
 same Quick Review box, same rubric table look) so a teacher who
 already knows how to skim a Procedures PDF can skim a MIPS PDF
-without re-orienting. The differences are purely structural: there
-is no checkstyle section, no per-method documentation listing, and
-the appendix shows per-exercise stdout instead of per-PASCAL-test
-stdout.
+without re-orienting.
+
+Conceptual difference from the Procedures PDF: the MIPS lab has no
+"hidden test suite" running against a student-written interpreter --
+each exercise IS a deliverable .asm file and the autograder verifies
+that file directly. The PDF reflects this: there's a per-exercise
+verification section, not an "appendix of hidden tests". Multiple
+checks per exercise exist (e.g. evenodd is verified with both even
+and odd inputs) but they're not separate tests; they're multiple
+eyes on the same deliverable.
 
 Robustness contract (same as report.py): we ALWAYS leave a PDF at
 out_path, even if rich rendering throws -- the fallback writes a
@@ -147,23 +153,23 @@ def _add_at_a_glance(story, graded, styles):
                      amber if pct >= 75 else red)
     files_color = band(matched == n_roles, matched >= max(1, n_roles - 1))
     rubric_color = band(rubric_fails == 0, rubric_fails <= 2)
-    tests_color = (white if test_total == 0
-                   else band(test_passed == test_total,
-                             test_passed >= max(1, test_total - 1)))
+    behavior_color = (white if test_total == 0
+                      else band(test_passed == test_total,
+                                test_passed >= max(1, test_total - 1)))
     docs_color = (band(header_total == n_files, header_total >= max(1, n_files - 1))
                   if n_files else white)
 
     cells = [
         _at_a_glance_cell("Overall",
                           f"{pct:.1f}%", overall_color, styles),
-        _at_a_glance_cell("Exercises matched",
+        _at_a_glance_cell("Exercises found",
                           f"{matched} / {n_roles}", files_color, styles),
         _at_a_glance_cell("Rubric flags",
                           f"{rubric_fails} of {len(graded.graded_items)} "
                           f"not full credit", rubric_color, styles),
-        _at_a_glance_cell("Tests passed",
+        _at_a_glance_cell("Behaviour OK",
                           (f"{test_passed} / {test_total}" if test_total
-                           else "n/a"), tests_color, styles),
+                           else "n/a"), behavior_color, styles),
         _at_a_glance_cell("Header docs",
                           (f"{header_total} / {n_files}"
                            if n_files else "no .asm files"),
@@ -193,7 +199,7 @@ def _quick_review_lines(graded):
     test_passed = sum(1 for v in graded.test_outcomes.values()
                       for t in v if t.passed)
     if test_total:
-        lines.append(f"Hidden output tests passed: "
+        lines.append(f"Per-exercise behaviour checks passing: "
                      f"{test_passed} / {test_total}.")
     fails = [gi for gi in graded.graded_items
              if gi.earned < gi.item.points]
@@ -351,14 +357,24 @@ def _add_file_inventory(story, graded, styles):
 
 
 def _add_test_appendix(story, graded, styles):
-    """Per-exercise: description, stdin, expected substrings, actual stdout."""
+    """Per-exercise verification detail.
+
+    Not a separate "hidden test suite" -- there is no such thing for
+    the MIPS lab. Each exercise IS a deliverable; this section shows
+    the autograder's verification for each one: what stdin we fed in,
+    what we looked for, and what the student's program printed.
+    """
     story.append(Paragraph(
-        "<b>Appendix: Hidden Test Suite</b>", styles["h2"]))
+        "<b>Per-Exercise Verification Detail</b>", styles["h2"]))
     story.append(Paragraph(
-        "For every rubric exercise that has hidden tests, this appendix "
-        "shows the input the autograder fed in, the expected substrings, "
-        "and the student's actual stdout. Pass cells are green; fail cells "
-        "are red. This is a teacher-only reference.",
+        "For every rubric exercise, this section shows the verification "
+        "the autograder ran: the input piped to the student's program, "
+        "the substrings expected in stdout, and what the program "
+        "actually printed. Pass cells are green; fail cells are red. "
+        "Multiple checks per exercise just exercise it with different "
+        "inputs (e.g. ex5 is verified with both an even and an odd "
+        "input) -- they are not separate tests, just multiple eyes on "
+        "the same deliverable.",
         styles["meta"]))
     story.append(Spacer(1, 4))
     green = Color(0.82, 0.95, 0.82)
