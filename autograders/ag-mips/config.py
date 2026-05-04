@@ -1,45 +1,38 @@
 """
 MIPS Lab specific configuration for the ATCS Compilers autograder.
 
-Maps the Lab 5 (MIPS) handout to a concrete rubric:
+Rubric structure
+================
+The official ATCS MIPS Peer Review sheet has 7 rows summing to 52
+pts. This config mirrors them one-for-one (re-normalised to 100 pts
+for consistency with the rest of the autograder); the row codes below
+keep the lab-document order so the teacher can scan top-to-bottom:
 
-    Exercise 2  -- simple.asm: 2 + 3 program that runs cleanly.
-    Exercise 4  -- a small "read input + compute + print" program of
-                   the student's choice (multiplication is suggested).
-    Exercise 5  -- read an integer; print "Even" or "Odd".
-    Exercise 6  -- read low/high/step; print the sequence.
-    Next        -- guessing-game (computer picks OR student picks).
-    Next        -- read 10 ints into an array; print sum/avg/min/max.
-    Open-ended  -- "more interesting MIPS program of your own choice".
-    Header docs -- every .asm file must have @author + @version + a
-                   description in its leading # comment block.
-    Comment density -- the lab text says "comment every 2 or 3 lines";
-                       we score the average #-line ratio across the
-                       student's matched files.
+    1. all-headers       -- every .asm has @author/@version/summary
+    2. simple-and-evenodd -- simple program uses arithmetic OTHER than
+                              addition + evenodd has nice prompt and
+                              messages and works on negatives
+    3. loops-with-reversed -- low/high/step loop, plus does NOT
+                              infinite-loop when low > high
+    4. guessing-game      -- nice prompt + wrong-guess message +
+                              correct-guess congratulation
+    5. random-quality     -- RNG actually used and "really random"
+    6. array-two-loops    -- array program with TWO separate loops
+                              (one to store, one to compute stats)
+    7. interesting-nontrivial -- open-ended program that's NOT trivial
+                              (rules out "max of two ints" / "1..10")
 
-There is no separate "hidden test suite" in this lab the way there
-is for Procedures (where tests are PASCAL programs run against a
-student-written interpreter). Here each exercise IS a deliverable
-.asm file; the autograder verifies that file directly by piping
-sample input in and looking for the right output. Multiple
-verification cases per exercise (e.g. evenodd is checked with both
-an even and an odd input) are just multiple eyes on the same
-deliverable, not separate tests.
-
-Each rubric row is intentionally independent of every other row -- a
-student missing the array program still gets full credit for the
-even/odd one, and so on. This mirrors the airtightness principle of
-the Procedures-lab grader.
+Every row is independent of every other row -- a missing guessing
+game does not blunt the score for the array row, and so on. This
+mirrors the airtightness principle of the Procedures-lab grader.
 
 How student renames are tolerated
 =================================
-Students name their files inconsistently. The same exercise can show
-up as evenodd.asm / parity.asm / even.asm / ex5.asm / exercise5.asm.
+Students name their files inconsistently. The same exercise shows up
+as evenodd.asm / parity.asm / even.asm / ex5.asm / exercise5.asm.
 Each EXERCISES entry below carries a list of preferred basenames,
-loose name-token matchers, and -- as a last resort -- substrings to
-look for inside the file body. The orchestrator
-(agcore.mips_grader._match_role) scores every candidate and binds the
-highest scorer.
+loose name-token matchers, and content substrings as a last resort.
+The orchestrator scores every candidate and binds the highest scorer.
 
 How output matching works
 =========================
@@ -47,14 +40,12 @@ We do NOT exact-match stdout. Students decorate output with prompts
 ("Enter a number:") and trailing punctuation, and grading on
 exact-line equality would penalise stylistic choices the lab doesn't
 care about. Each MipsTestSpec lists `expected_substrings` that must
-appear in stdout in the given order, case-insensitively. So a student
-whose loops.asm prints "10\n35\n60\n85\n" and a student whose prints
-"10 35 60 85" both pass the same row -- the four numbers appear in
-the right order in both.
+appear in stdout in the given order, case-insensitively.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Callable, List, Sequence, Tuple
 
@@ -208,6 +199,20 @@ ROLE_TESTS = {
             description="0 is even (boundary)",
             timeout=10,
         ),
+        MipsTestSpec(
+            name="ex5_negative_odd",
+            stdin_text="-7\n",
+            expected_substrings=("odd",),
+            description="Peer-review check: works with negative numbers (-7 odd)",
+            timeout=10,
+        ),
+        MipsTestSpec(
+            name="ex5_negative_even",
+            stdin_text="-12\n",
+            expected_substrings=("even",),
+            description="Peer-review check: works with negative numbers (-12 even)",
+            timeout=10,
+        ),
     ),
     "ex6_loops": (
         MipsTestSpec(
@@ -223,6 +228,20 @@ ROLE_TESTS = {
             expected_substrings=("1", "2", "3", "4"),
             description="low=1 high=5 step=1 prints 1,2,3,4",
             timeout=10,
+        ),
+        MipsTestSpec(
+            # Peer-review check: reversed inputs (high < low) MUST NOT
+            # cause an infinite loop. Either of two valid behaviours
+            # passes (graded in _loops_with_reversed_row, not via
+            # expected_substrings here -- this spec is a "did it
+            # terminate" probe, the row's checker reads the outcome).
+            name="ex6_reversed_inputs",
+            stdin_text="100\n10\n25\n",
+            expected_substrings=(),
+            description="Reversed inputs (100, 10, 25) -- must terminate "
+                        "in <5s, either with no output, an error message, "
+                        "or by switching low/high.",
+            timeout=5,
         ),
     ),
     "next_array": (
@@ -272,6 +291,99 @@ ROLE_TESTS = {
 # --------------------------------------------------------------------------- #
 # Rubric checkers
 # --------------------------------------------------------------------------- #
+
+def _file_text(g: MipsGradedSubmission, role: str) -> str:
+    """Return the .asm file body bound to `role`, or "" if unmatched.
+
+    Used by the content-shape checks below (non-add arithmetic, prompts,
+    RNG syscalls, two-loop architecture, non-triviality). Read errors
+    fall back to the empty string -- the rubric row will then say the
+    feature is missing, which is the correct behaviour for a file that
+    can't even be opened.
+    """
+    match = g.role_matches.get(role)
+    if match is None or match.file is None:
+        return ""
+    try:
+        return match.file.path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _has_non_addition_arithmetic(src: str) -> bool:
+    """True iff the file uses an arithmetic op other than addition.
+
+    Recognised: mult / multu / div / divu / subu / sub / sll / srl / sra
+    (shifts count as "non-addition arithmetic" for grading purposes; the
+    peer-review wording is "an arithmetic operation other than
+    addition", and bit shifts qualify under the lab's reading).
+    """
+    if not src:
+        return False
+    return bool(re.search(
+        r"\b(mult|multu|div|divu|subu|sub|sll|srl|sra|mflo|mfhi)\b",
+        src,
+    ))
+
+
+def _has_data_strings(src: str) -> bool:
+    """True iff the file declares at least one .asciiz string in .data.
+
+    Used as a proxy for "has nice prompt / message" -- a program that
+    prints integers without strings has no prompts, no labels, no
+    feedback messages.
+    """
+    return bool(re.search(r"\.asciiz\s*\"", src))
+
+
+def _back_jump_loop_count(src: str) -> int:
+    """Count distinct loops by counting unique back-jump targets.
+
+    A "loop" is a `j <label>` (or branch-style `bxx ... <label>`) whose
+    `<label>:` appears EARLIER in the file. The count is the number of
+    distinct such labels, which approximates the number of independent
+    loops in the program. Crude but reliable enough for the
+    array-two-loops rubric row.
+    """
+    if not src:
+        return 0
+    label_lines: dict = {}
+    branch_targets: list = []
+    for i, raw in enumerate(src.splitlines()):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m_label = re.match(r"^([A-Za-z_]\w*)\s*:", line)
+        if m_label and m_label.group(1) not in label_lines:
+            label_lines[m_label.group(1)] = i
+        m_jump = re.match(
+            r"^(?:j|beq|bne|blt|bgt|ble|bge|bltz|bgtz|blez|bgez|bnez|beqz)\b"
+            r"[^,]*,?[^,]*,?\s*([A-Za-z_]\w*)",
+            line,
+        )
+        if m_jump:
+            branch_targets.append((m_jump.group(1), i))
+    distinct_back: set = set()
+    for target, at_line in branch_targets:
+        defined = label_lines.get(target)
+        if defined is not None and defined < at_line:
+            distinct_back.add(target)
+    return len(distinct_back)
+
+
+def _looks_like_rng_syscall(src: str) -> bool:
+    """True iff the file invokes a MARS RNG syscall (41/42).
+
+    Syscall 41 = random int, 42 = random int in [0, $a1). Either is
+    accepted; we just want evidence that the program isn't pretending
+    to be random by hardcoding a value.
+    """
+    if not src:
+        return False
+    if re.search(r"li\s+\$v0\s*,?\s*4[12]\b", src):
+        return True
+    return False
+
 
 def _scored_exercise_row(role: str, points: float,
                          min_pass_for_full: int = -1
@@ -374,55 +486,6 @@ def _scored_exercise_row(role: str, points: float,
     return checker
 
 
-def _interesting_program_row(g: MipsGradedSubmission) -> CheckResult:
-    """Open-ended row: any .asm not bound to a numbered exercise counts.
-
-    We deliberately do NOT try to autograde correctness here -- the
-    point is "did the student do something beyond the assigned set".
-    Score:
-      file present              -> 30%
-      header doc with @author   -> 30%
-      assembles cleanly         -> 40%
-    """
-    points = next(item.points for item in RUBRIC if item.code == "interesting")
-    match = g.role_matches.get("interesting")
-    notes: List[str] = []
-    if match is None or match.file is None:
-        return CheckResult(
-            earned=0.0,
-            notes="no leftover .asm file (no 'interesting' program found)",
-            severity=SEVERITY_MEDIUM,
-        )
-    f = match.file
-    score = points * 0.3   # presence
-    h = f.header
-    if h.has_block and (h.author or "").strip() and (h.version or "").strip():
-        score += points * 0.3
-    elif h.has_block:
-        score += points * 0.15
-        notes.append("header present but missing @author or @version")
-    else:
-        notes.append("no header comment block")
-    # Assembles cleanly?
-    from agcore import mars_runner
-    res = mars_runner.assemble_only(
-        f.path, g.config.mars_jar, java_exe=g.config.java_exe)
-    if res.error:
-        notes.append(f"could not invoke java: {res.error}")
-    elif res.assemble_error:
-        notes.append("MARS assembler rejected the file")
-    else:
-        score += points * 0.4
-    notes.insert(0, f"file: {f.relative}")
-    notes.append("REVIEW: open-ended creativity is not autograded; "
-                 "the teacher should skim the file")
-    score = min(score, points)
-    severity = (0 if score >= points else
-                SEVERITY_MINOR if score >= points * 0.5 else SEVERITY_MEDIUM)
-    return CheckResult(earned=round(score, 1),
-                       notes="; ".join(notes), severity=severity)
-
-
 def _header_doc_row(g: MipsGradedSubmission) -> CheckResult:
     """Across-the-board check: every .asm has @author + @version + summary.
 
@@ -431,7 +494,7 @@ def _header_doc_row(g: MipsGradedSubmission) -> CheckResult:
     Score is proportional: complete header per file -> full per-file
     credit; partial header -> 50%; missing -> 0%.
     """
-    points = next(item.points for item in RUBRIC if item.code == "header-docs")
+    points = next(item.points for item in RUBRIC if item.code == "all-headers")
     if not g.asm_files:
         return CheckResult(earned=0.0,
                            notes="no .asm files in submission",
@@ -468,121 +531,390 @@ def _header_doc_row(g: MipsGradedSubmission) -> CheckResult:
     return CheckResult(earned=earned, notes=notes, severity=severity)
 
 
-def _comment_density_row(g: MipsGradedSubmission) -> CheckResult:
-    """The lab text says "comment every 2 or 3 lines". We score the average
-    comment-density ratio across the student's matched .asm files.
+# --------------------------------------------------------------------------- #
+# Peer-review rubric checkers (rows 2..7; row 1 is _header_doc_row above)
+# --------------------------------------------------------------------------- #
 
-    Thresholds (deliberately generous; this is a soft signal):
-      avg >= 40%  -> full credit
-      avg >= 25%  -> half credit
-      avg <  25%  -> 0
-    Files with no instructions at all are excluded from the average so a
-    pure-data .asm (rare) doesn't pull the score down.
+
+def _simple_and_evenodd_row(g: MipsGradedSubmission) -> CheckResult:
+    """Peer-review row 2 (8 pts).
+
+    Combines two checks the rubric lumps into a single row:
+      * 4 pts: the student's own simple program (ex4 if matched, else
+        ex2) uses an arithmetic op OTHER than plain addition. The peer
+        review's wording is verbatim.
+      * 4 pts: the evenodd program runs on (8, 7, 0, -7, -12) -- four
+        positives + zero + two negatives confirm the negative-number
+        clause. Half credit if at least 3/5 cases pass; full at 5/5.
     """
-    points = next(item.points for item in RUBRIC if item.code == "comment-density")
-    files_with_inst = [f for f in g.asm_files if f.instruction_lines > 0]
-    if not files_with_inst:
-        return CheckResult(earned=0.0,
-                           notes="no .asm files with instructions to score",
-                           severity=SEVERITY_MAJOR)
-    avg = sum(f.comment_density for f in files_with_inst) / len(files_with_inst)
-    if avg >= 0.40:
-        earned = points
-        severity = 0
-        notes = f"avg comment density: {avg * 100:.0f}% (>= 40% target)"
-    elif avg >= 0.25:
-        earned = round(points * 0.5, 1)
-        severity = SEVERITY_MINOR
-        notes = (f"avg comment density: {avg * 100:.0f}% "
-                 f"(below the 40% target -- aim for a comment every 2-3 "
-                 f"lines per the lab text)")
+    notes: List[str] = []
+    score = 0.0
+
+    # -- Sub A: non-addition arithmetic in ex4 (preferred) or ex2.
+    arith_role = "ex4_compute" if g.role_matches.get("ex4_compute") else "ex2_simple"
+    arith_src = _file_text(g, arith_role)
+    arith_file = g.role_matches.get(arith_role)
+    if not arith_src:
+        notes.append("no simple/computation program found")
+    elif _has_non_addition_arithmetic(arith_src):
+        score += 4.0
     else:
-        earned = 0.0
-        severity = SEVERITY_MEDIUM
-        notes = (f"avg comment density: {avg * 100:.0f}% "
-                 f"(well below the 40% target)")
-    # Surface the files that pulled the average down.
-    worst = sorted(files_with_inst, key=lambda f: f.comment_density)[:2]
-    if worst and avg < 0.40:
-        worst_str = ", ".join(f"{w.relative} ({int(w.comment_density * 100)}%)"
-                              for w in worst)
-        notes += f" -- thinnest: {worst_str}"
-    return CheckResult(earned=earned, notes=notes, severity=severity)
+        rel = arith_file.file.relative if arith_file and arith_file.file else "?"
+        notes.append(
+            f"{rel} uses only addition (rubric asks for mult/sub/div/etc.)"
+        )
+
+    # -- Sub B: evenodd -- nice messages + works on negatives.
+    evenodd_outcomes = g.test_outcomes.get("ex5_evenodd", [])
+    evenodd_src = _file_text(g, "ex5_evenodd")
+    if not evenodd_outcomes:
+        notes.append("evenodd program not matched / not tested")
+    else:
+        passed = sum(1 for o in evenodd_outcomes if o.passed)
+        total = len(evenodd_outcomes)
+        if passed == total:
+            score += 4.0
+        elif passed >= 3:
+            score += 2.0
+            failing = ", ".join(o.spec.name for o in evenodd_outcomes
+                                if not o.passed)
+            notes.append(
+                f"evenodd: {passed}/{total} cases pass; failing: {failing}"
+            )
+        else:
+            failing = ", ".join(o.spec.name for o in evenodd_outcomes
+                                if not o.passed)
+            notes.append(
+                f"evenodd: only {passed}/{total} cases pass; failing: "
+                f"{failing}"
+            )
+        if evenodd_src and not _has_data_strings(evenodd_src):
+            notes.append(
+                "evenodd has no .asciiz strings (rubric expects nice "
+                "prompt and Even/Odd messages)"
+            )
+
+    score = round(min(score, 8.0), 1)
+    severity = (0 if score >= 8 else SEVERITY_MEDIUM if score >= 4
+                else SEVERITY_MAJOR)
+    return CheckResult(earned=score, notes="; ".join(notes), severity=severity)
+
+
+def _loops_with_reversed_row(g: MipsGradedSubmission) -> CheckResult:
+    """Peer-review row 3 (8 pts).
+
+    Combines the regular low/high/step loop with the reversed-input
+    safety check:
+      * 5 pts: the two normal cases (lab example + step-1) pass.
+      * 3 pts: the reversed-input case terminates within timeout.
+        ANY of {empty stdout, error message, swapped-and-printed
+        sequence} satisfies the rubric.
+    """
+    notes: List[str] = []
+    score = 0.0
+    outcomes = g.test_outcomes.get("ex6_loops", [])
+    if not outcomes:
+        return CheckResult(earned=0.0, notes="loops program not matched",
+                           severity=SEVERITY_MAJOR)
+
+    normal = [o for o in outcomes if o.spec.name in
+              ("ex6_lab_example", "ex6_step_one")]
+    reversed_o = next((o for o in outcomes
+                       if o.spec.name == "ex6_reversed_inputs"), None)
+
+    if normal:
+        passed = sum(1 for o in normal if o.passed)
+        score += 5.0 * passed / len(normal)
+        if passed < len(normal):
+            failing = ", ".join(o.spec.name for o in normal if not o.passed)
+            notes.append(f"loops: {passed}/{len(normal)} normal cases pass; "
+                         f"failing: {failing}")
+
+    if reversed_o is not None:
+        if reversed_o.timed_out:
+            notes.append(
+                "reversed inputs (low > high) appear to infinite-loop "
+                "(timed out); rubric requires graceful handling"
+            )
+        elif reversed_o.error and "runtime" in (reversed_o.error or "").lower():
+            score += 1.5
+            notes.append(
+                "reversed inputs triggered a runtime trap rather than a "
+                "graceful error; partial credit"
+            )
+        else:
+            score += 3.0
+
+    score = round(min(score, 8.0), 1)
+    severity = (0 if score >= 8 else SEVERITY_MEDIUM if score >= 4
+                else SEVERITY_MAJOR)
+    return CheckResult(earned=score, notes="; ".join(notes), severity=severity)
+
+
+def _guessing_game_row(g: MipsGradedSubmission) -> CheckResult:
+    """Peer-review row 4 (8 pts).
+
+    Manual review is unavoidable for the "nice messages" wording, but
+    we can grade three concrete signals:
+      * 3 pts: file is matched.
+      * 2 pts: file declares .asciiz strings (nice prompt + nice
+        feedback messages -- a guessing game with no strings has no
+        prompts at all).
+      * 3 pts: file runs to completion without trapping under a wide
+        spread of guesses.
+    Tagged REVIEW so the teacher confirms message quality.
+    """
+    match = g.role_matches.get("next_guessing")
+    notes: List[str] = []
+    score = 0.0
+    if match is None or match.file is None:
+        return CheckResult(earned=0.0, notes="guessing-game file not found",
+                           severity=SEVERITY_MAJOR)
+    score += 3.0
+    src = _file_text(g, "next_guessing")
+    if _has_data_strings(src):
+        score += 2.0
+    else:
+        notes.append("no .asciiz strings (rubric expects nice prompt + "
+                     "wrong-guess + correct-guess messages)")
+    outcomes = g.test_outcomes.get("next_guessing", [])
+    runs_ok = bool(outcomes) and all(
+        not o.timed_out and not (o.error or "") for o in outcomes
+    )
+    if runs_ok:
+        score += 3.0
+    elif outcomes:
+        first_fail = next((o for o in outcomes if o.timed_out or o.error),
+                          None)
+        if first_fail and first_fail.timed_out:
+            notes.append("guessing game timed out under driving inputs")
+        elif first_fail:
+            notes.append(f"guessing game errored: {first_fail.error}")
+    notes.append("REVIEW: skim file to confirm prompt/messages quality")
+    score = round(min(score, 8.0), 1)
+    severity = (0 if score >= 8 else SEVERITY_MINOR if score >= 4
+                else SEVERITY_MEDIUM)
+    return CheckResult(earned=score, notes="; ".join(notes), severity=severity)
+
+
+def _random_quality_row(g: MipsGradedSubmission) -> CheckResult:
+    """Peer-review row 5 (6 pts).
+
+    "Really random" is a human judgement, but we can grade the
+    mechanism: did the student wire in a MARS RNG syscall (41 or 42)
+    rather than hardcode a number? Look in the guessing-game file
+    first, fall back to ANY .asm in the submission.
+
+      * 4 pts: an RNG syscall is present somewhere
+      * 2 pts: REVIEW credit for "really random" -- teacher confirms
+    """
+    notes: List[str] = []
+    score = 0.0
+    src = _file_text(g, "next_guessing")
+    if not _looks_like_rng_syscall(src):
+        for f in g.asm_files:
+            try:
+                body = f.path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if _looks_like_rng_syscall(body):
+                src = body
+                notes.append(f"RNG syscall found in {f.relative} "
+                             f"(not the matched guessing-game file)")
+                break
+    if _looks_like_rng_syscall(src):
+        score += 4.0
+    else:
+        notes.append("no MARS RNG syscall (li $v0, 41/42) found anywhere")
+    score += 2.0   # REVIEW credit for "really random"
+    notes.append("REVIEW: confirm the RNG output looks 'really random'")
+    score = round(min(score, 6.0), 1)
+    severity = (0 if score >= 6 else SEVERITY_MINOR if score >= 3
+                else SEVERITY_MEDIUM)
+    return CheckResult(earned=score, notes="; ".join(notes), severity=severity)
+
+
+def _array_two_loops_row(g: MipsGradedSubmission) -> CheckResult:
+    """Peer-review row 6 (6 pts).
+
+    The rubric explicitly asks for TWO separate loops -- one to read
+    the values into the array, one to walk them computing min/max etc.
+    A single fused loop misses the point even if it produces correct
+    output.
+
+      * 2 pts: file is matched
+      * 2 pts: at least 2 distinct back-jump labels (= 2 separate loops)
+      * 2 pts: behavioural test (1..10 -> sum=55, min=1, max=10) passes
+    """
+    match = g.role_matches.get("next_array")
+    notes: List[str] = []
+    score = 0.0
+    if match is None or match.file is None:
+        return CheckResult(earned=0.0, notes="array file not found",
+                           severity=SEVERITY_MAJOR)
+    score += 2.0
+    src = _file_text(g, "next_array")
+    loops = _back_jump_loop_count(src)
+    if loops >= 2:
+        score += 2.0
+    else:
+        notes.append(
+            f"only {loops} loop(s) detected -- rubric asks for two "
+            f"separate loops (one to store, one to compute)"
+        )
+    outcomes = g.test_outcomes.get("next_array", [])
+    if outcomes and all(o.passed for o in outcomes):
+        score += 2.0
+    elif outcomes:
+        failing = ", ".join(o.spec.name for o in outcomes if not o.passed)
+        notes.append(f"behavioural test(s) failing: {failing}")
+    score = round(min(score, 6.0), 1)
+    severity = (0 if score >= 6 else SEVERITY_MEDIUM if score >= 3
+                else SEVERITY_MAJOR)
+    return CheckResult(earned=score, notes="; ".join(notes), severity=severity)
+
+
+def _interesting_nontrivial_row(g: MipsGradedSubmission) -> CheckResult:
+    """Peer-review row 7 (11 pts).
+
+    Open-ended program that's NOT trivial. The rubric explicitly rules
+    out "max of two numbers" and "print 1..10 in a loop" as too
+    trivial. We grade what we can mechanically; the rest is REVIEW.
+
+      * 2 pts: file is matched
+      * 2 pts: header doc with @author + @version
+      * 2 pts: assembles cleanly
+      * 5 pts: non-triviality heuristic (split 3 + 2):
+                 + 3 pts: at least one back-jump loop AND a .data section
+                          AND >= 25 instruction lines
+                 + 2 pts: at least one branch instruction beyond j (so
+                          the program has decisions, not just linear flow)
+    """
+    match = g.role_matches.get("interesting")
+    notes: List[str] = []
+    score = 0.0
+    if match is None or match.file is None:
+        return CheckResult(
+            earned=0.0,
+            notes="no leftover .asm file -- the open-ended program is missing",
+            severity=SEVERITY_MEDIUM,
+        )
+    f = match.file
+    notes.insert(0, f"file: {f.relative}")
+    score += 2.0   # presence
+
+    h = f.header
+    if (h.has_block and (h.author or "").strip()
+            and (h.version or "").strip()):
+        score += 2.0
+    elif h.has_block:
+        score += 1.0
+        notes.append("header present but missing @author or @version")
+    else:
+        notes.append("no header block")
+
+    from agcore import mars_runner
+    res = mars_runner.assemble_only(
+        f.path, g.config.mars_jar, java_exe=g.config.java_exe)
+    if res.error:
+        notes.append(f"could not invoke java: {res.error}")
+    elif res.assemble_error:
+        notes.append("MARS assembler rejected the file")
+    else:
+        score += 2.0
+
+    src = _file_text(g, "interesting")
+    has_loop = _back_jump_loop_count(src) >= 1
+    has_data = bool(re.search(r"^\s*\.data\b", src, re.MULTILINE))
+    long_enough = f.instruction_lines >= 25
+    has_branches = bool(re.search(
+        r"\b(beq|bne|blt|bgt|ble|bge|bltz|bgtz|blez|bgez|bnez|beqz)\b",
+        src,
+    ))
+    if has_loop and has_data and long_enough:
+        score += 3.0
+    else:
+        missing = []
+        if not has_loop:
+            missing.append("no loop")
+        if not has_data:
+            missing.append("no .data")
+        if not long_enough:
+            missing.append(f"only {f.instruction_lines} instructions")
+        notes.append("non-triviality (depth): " + ", ".join(missing))
+    if has_branches:
+        score += 2.0
+    else:
+        notes.append("non-triviality (decisions): no conditional branches")
+
+    notes.append("REVIEW: skim the file to confirm it is non-trivial "
+                 "(rubric rules out 'max of 2 ints' and 'print 1..10')")
+    score = round(min(score, 11.0), 1)
+    severity = (0 if score >= 11 else SEVERITY_MINOR if score >= 6
+                else SEVERITY_MEDIUM)
+    return CheckResult(earned=score, notes="; ".join(notes), severity=severity)
 
 
 # --------------------------------------------------------------------------- #
-# The rubric itself
+# The rubric itself -- mirrors the 7-row peer review (5+8+8+8+6+6+11 = 52).
 # --------------------------------------------------------------------------- #
 
-# Points sum to 100. Per-exercise rows weight tests at 50% (only ex4 uses
-# min_pass_for_full=1 because either reading -- multiply or add -- counts).
 RUBRIC: Sequence[RubricItem] = (
     RubricItem(
-        code="ex2-simple",
-        description="Exercise 2: simple 2+3 program (runs cleanly)",
+        code="all-headers",
+        description="All Programs: header comments include name, date, "
+                    "and summary using JavaDoc Standards",
         points=5,
-        checker=_scored_exercise_row("ex2_simple", 5),
-        category="Exercises",
-    ),
-    RubricItem(
-        code="ex4-compute",
-        description="Exercise 4: read input + compute + print "
-                    "(multiply OR add)",
-        points=12,
-        checker=_scored_exercise_row("ex4_compute", 12, min_pass_for_full=1),
-        category="Exercises",
-    ),
-    RubricItem(
-        code="ex5-evenodd",
-        description="Exercise 5: read an integer; print Even or Odd",
-        points=14,
-        checker=_scored_exercise_row("ex5_evenodd", 14),
-        category="Exercises",
-    ),
-    RubricItem(
-        code="ex6-loops",
-        description="Exercise 6: print numbers in a range with a step",
-        points=14,
-        checker=_scored_exercise_row("ex6_loops", 14),
-        category="Exercises",
-    ),
-    RubricItem(
-        code="next-array",
-        description="Next: array of 10 ints; print sum/avg/min/max",
-        points=14,
-        checker=_scored_exercise_row("next_array", 14),
-        category="Next",
-    ),
-    RubricItem(
-        code="next-guessing",
-        description="Next: guessing-game program (REVIEW; output non-deterministic)",
-        points=12,
-        checker=_scored_exercise_row("next_guessing", 12, min_pass_for_full=0),
-        category="Next",
-    ),
-    RubricItem(
-        code="interesting",
-        description="Open-ended: 'a more interesting MIPS program of your "
-                    "own choice' (REVIEW; teacher should skim)",
-        points=9,
-        checker=_interesting_program_row,
-        category="Bonus",
-    ),
-    RubricItem(
-        code="header-docs",
-        description="Every .asm file has a header block with @author, "
-                    "@version, and a description",
-        points=12,
         checker=_header_doc_row,
         category="Documentation",
     ),
     RubricItem(
-        code="comment-density",
-        description="Comment density across files (lab asks for a "
-                    "comment every 2-3 lines)",
+        code="simple-and-evenodd",
+        description="Simple program uses arithmetic OTHER than addition + "
+                    "evenodd has nice prompt/messages and works on negatives",
         points=8,
-        checker=_comment_density_row,
-        category="Documentation",
+        checker=_simple_and_evenodd_row,
+        category="Programs",
+    ),
+    RubricItem(
+        code="loops-with-reversed",
+        description="Range loop (low/high/step) -- works for normal inputs "
+                    "AND does not infinite-loop when low > high",
+        points=8,
+        checker=_loops_with_reversed_row,
+        category="Programs",
+    ),
+    RubricItem(
+        code="guessing-game",
+        description="Guessing game has nice prompt + wrong-guess message "
+                    "+ congratulatory message on correct guess (REVIEW)",
+        points=8,
+        checker=_guessing_game_row,
+        category="Programs",
+    ),
+    RubricItem(
+        code="random-quality",
+        description="Random number generator works and is really random "
+                    "(REVIEW)",
+        points=6,
+        checker=_random_quality_row,
+        category="Programs",
+    ),
+    RubricItem(
+        code="array-two-loops",
+        description="Array program has TWO separate loops (one to store, "
+                    "one to compute min/max etc.)",
+        points=6,
+        checker=_array_two_loops_row,
+        category="Programs",
+    ),
+    RubricItem(
+        code="interesting-nontrivial",
+        description="Open-ended program that is NOT trivial (rules out "
+                    "'max of 2 ints' / 'print 1..10') (REVIEW)",
+        points=11,
+        checker=_interesting_nontrivial_row,
+        category="Programs",
     ),
 )
 

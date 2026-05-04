@@ -309,7 +309,7 @@ def _add_file_inventory(story, graded, styles):
         "Every .asm file the autograder discovered in the submission. "
         "The 'Bound to' column shows which rubric exercise this file "
         "fulfils, if any. Files with no binding still count toward the "
-        "header-docs and comment-density rows.",
+        "all-headers row.",
         styles["meta"]))
     # Reverse-index role matches by file path so we can show bindings.
     bindings: dict = {}
