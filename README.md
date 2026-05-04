@@ -1,13 +1,24 @@
 # ATCS Compilers Autograder
 
 A reusable, lab-pluggable autograder for the ATCS Compilers & Interpreters
-sequence. Two labs are currently wired up:
+sequence. Three labs are currently wired up:
 
 - **Procedures** (`autograders/ag-procedures/`) — grades a `Compiler/`
-  folder of Java sources implementing a Pascal interpreter.
+  folder of Java sources implementing a Pascal interpreter. Hidden
+  tests are driven by an autograder-synthesised `_AGTester.java` so a
+  student's hardcoded test filename in their own ParserTester can't
+  silently re-run the same baked-in file for every test.
 - **MIPS** (`autograders/ag-mips/`) — grades a folder of `.asm` files
   for Lab 5 (MIPS assembly), running each in the bundled MARS 4.5
-  simulator and matching stdout against expected substrings.
+  simulator and matching stdout against the official 7-row peer
+  review (52 pts).
+- **CodeGen** (`autograders/ag-codegen/`) — grades a `Compiler/`
+  folder whose Pascal-to-MIPS emitter must produce assembly that runs
+  correctly under MARS. Same synthetic-driver pattern as Procedures:
+  we generate a `_AGCodeGenTester.java` that drives the student's
+  parser + emitter to write a `.asm`, then we run that `.asm`
+  through MARS and grade the resulting stdout against the lab's
+  required programs (parserTest9.txt + max.txt).
 
 Adding another lab is a matter of writing a new `config.py` + test
 suite next to those.
@@ -175,6 +186,18 @@ push student work into the repo.
 # Whole folder:
 ./autograders/ag-mips/ag-mips ag-tests/mips/inputs/ \
     -o ag-tests/mips/outputs/
+```
+
+### CodeGen lab
+
+```bash
+# Single student:
+./autograders/ag-codegen/ag-codegen path/to/student.zip \
+    -o ag-tests/codegen/outputs/
+
+# Whole folder:
+./autograders/ag-codegen/ag-codegen ag-tests/codegen/inputs/ \
+    -o ag-tests/codegen/outputs/
 ```
 
 Each student gets a file `<first>-<last>-<lab>-report.pdf` inside the

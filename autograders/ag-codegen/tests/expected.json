@@ -1,0 +1,36 @@
+{
+  "test01_writeln": {
+    "description": "Lab Ex 5: WRITELN(5) -> '5'",
+    "expected": ["5"]
+  },
+  "test02_arithmetic": {
+    "description": "Lab Ex 7: WRITELN(4 + 2 * 3) -> '10' (precedence + binop stack)",
+    "expected": ["10"]
+  },
+  "test03_block": {
+    "description": "Lab Ex 8: BEGIN WRITELN(-3 + 11); WRITELN(16 / 2); END -> 8, 8",
+    "expected": ["8", "8"]
+  },
+  "test04_variables": {
+    "description": "Lab Ex 12: VAR + assignment + variable read",
+    "expected": ["9"]
+  },
+  "test05_if": {
+    "description": "Lab Ex 15: nested IF with =, <>, <=, > operators",
+    "expected": ["4", "5"]
+  },
+  "test06_while": {
+    "description": "Lab Ex 15 (While): WHILE count <= 5 prints 1..5",
+    "expected": ["1", "2", "3", "4", "5"]
+  },
+  "test07_max": {
+    "description": "Peer-review required: max.txt -- max(10, 20)",
+    "expected": ["20"]
+  },
+  "test08_combined": {
+    "description": "Peer-review required: parserTest9.txt -- VAR + arithmetic + nested IF + WHILE 1..15",
+    "expected": ["15", "5", "3", "4", "5",
+                 "1", "2", "3", "4", "5", "6", "7", "8",
+                 "9", "10", "11", "12", "13", "14", "15"]
+  }
+}
