@@ -21,7 +21,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from . import checkstyle_runner, extractor, java_runner, javadoc_parser
+from . import (
+    checkstyle_runner, extractor, java_runner, javadoc_parser,
+    synthetic_tester,
+)
 from .proximity import ProximityFinding
 from .role_resolver import RoleSpec, resolve_class_role, resolve_method
 from .rubric import CheckResult, GradedItem, RubricItem
@@ -49,6 +52,10 @@ class TestOutcome:
     stderr: str
     error: str = ""   # High-level reason for a failure.
     timed_out: bool = False
+    # Path to the artifact the test produced, if any. CodeGen tests
+    # produce a .asm file the renderer can show; procedures tests
+    # produce no artifact and leave this None.
+    artifact_path: Optional[Path] = None
 
 
 @dataclass
@@ -68,6 +75,26 @@ class LabConfig:
     java_exe: str = "java"
     javac_exe: str = "javac"
     main_class: str = "parser.Parser"
+    # Which synthetic-tester variant to generate before compile, if any.
+    # "procedures" emits a driver that parses + execs; "codegen" emits
+    # one that parses + writes .asm to args[1]; None disables generation
+    # and the grader falls back entirely to the student's own main.
+    synthetic_tester_kind: Optional[str] = None
+    # When the synthetic tester is generated and compiled successfully,
+    # the orchestrator prefers it over the student's own main for the
+    # hidden test suite. Set to False if a lab needs the student's own
+    # main on hidden tests for some reason (none currently do).
+    prefer_synthetic_for_hidden: bool = True
+    # Per-test runner override. The default (None) runs the lab's main
+    # class against the test file and matches stdout. CodeGen overrides
+    # this with a runner that asks the student's emitter to write a
+    # .asm file and then runs that .asm through MARS, matching the
+    # MARS stdout instead. The signature is (case, graded) -> outcome
+    # so the runner has full access to the parsed submission.
+    test_runner: Optional[Callable[["TestCase", "GradedSubmission"],
+                                   "TestOutcome"]] = None
+    # MARS jar path, only consulted by the CodeGen test runner.
+    mars_jar: Optional[Path] = None
 
     # Role-based class + method resolution. class_roles maps a rubric-level
     # role name (e.g. "ProcedureCall") to a RoleSpec that tells the resolver
@@ -108,6 +135,13 @@ class GradedSubmission:
     # Cached choice: the first candidate that actually runs on test 1.
     # Populated lazily so we only probe once per submission.
     selected_main_class: Optional[str] = None
+    # If a synthetic _AGTester was successfully generated and compiled,
+    # this carries the artifact so _run_test_case can prefer it over
+    # the student's own main. None means we fell back to the student's
+    # detected main candidates -- typical when the lab doesn't enable
+    # synthetic-tester generation, or when role resolution couldn't find
+    # a Parser-shaped class to drive.
+    synthetic: Optional[synthetic_tester.SyntheticTester] = None
     # Memoisation for class_for_role so each rubric checker doesn't re-score
     # every class. Populated lazily on first lookup per role name.
     _role_cache: Dict[str, Optional[javadoc_parser.ClassRecord]] = field(
@@ -300,6 +334,15 @@ def grade(zip_path: Path, config: LabConfig,
     )
     classes, unparsed_files = javadoc_parser.parse_tree_with_failures(
         submission.compiler_root)
+
+    # Synthesize the per-submission driver BEFORE compile so it is built
+    # into the same classes/ dir as the student's code. The student's
+    # tester (with their hardcoded test filename) is left intact -- we
+    # just don't run it for the hidden suite. If generation fails for any
+    # reason, fall back silently to probing the student's own main.
+    synthetic = _maybe_build_synthetic_tester(config, classes,
+                                              submission.compiler_root)
+
     compile_result = java_runner.compile_project(
         submission.compiler_root, javac_exe=config.javac_exe,
     )
@@ -320,12 +363,26 @@ def grade(zip_path: Path, config: LabConfig,
         classes=classes, compile_result=compile_result,
         unparsed_files=unparsed_files,
         main_class_candidates=main_candidates,
+        synthetic=synthetic,
     )
 
+    # If we generated and compiled a synthetic driver, lock it as the
+    # main class for the hidden suite. Failed compilation drops us back
+    # to the student's own main candidates -- _run_test_case will discover
+    # that on its own.
+    if (synthetic is not None
+            and compile_result.success
+            and config.prefer_synthetic_for_hidden):
+        graded.selected_main_class = synthetic.fq_class
+
     # Functional test pass -- each test is isolated so one failure doesn't
-    # poison the rest.
+    # poison the rest. The lab can plug in a custom runner via
+    # config.test_runner; the default below runs the student's main
+    # against the test file and matches stdout, which is what every
+    # parse/exec lab wants.
+    runner = config.test_runner or _run_test_case
     for case in config.hidden_tests:
-        graded.test_outcomes.append(_run_test_case(case, graded))
+        graded.test_outcomes.append(runner(case, graded))
 
     # Documentation proximity pass.
     for rule in config.proximity_rules:
@@ -350,6 +407,55 @@ def grade(zip_path: Path, config: LabConfig,
     return graded
 
 
+def _maybe_build_synthetic_tester(
+    config: LabConfig,
+    classes: List[javadoc_parser.ClassRecord],
+    compiler_root: Path,
+) -> Optional[synthetic_tester.SyntheticTester]:
+    """Generate a per-submission driver class if config asks for one.
+
+    We resolve the rubric roles (Parser, Program, Environment, Emitter)
+    against the parsed classes here rather than going through
+    GradedSubmission.class_for_role -- the GradedSubmission isn't built
+    yet at this point in the pipeline, but the role specs already live
+    on config.class_roles so we have everything we need.
+    """
+    kind = config.synthetic_tester_kind
+    if not kind:
+        return None
+
+    def _resolve(role_name: str):
+        spec = config.class_roles.get(role_name)
+        if spec is None:
+            for c in classes:
+                if c.name == role_name:
+                    return c
+            return None
+        return resolve_class_role(classes, spec)
+
+    parser_role = _resolve("Parser")
+    program_role = _resolve("Program")
+
+    if kind == "procedures":
+        environment_role = _resolve("Environment")
+        return synthetic_tester.build_for_procedures(
+            classes, compiler_root,
+            parser_role=parser_role,
+            program_role=program_role,
+            environment_role=environment_role,
+        )
+    if kind == "codegen":
+        emitter_role = _resolve("Emitter")
+        return synthetic_tester.build_for_codegen(
+            classes, compiler_root,
+            parser_role=parser_role,
+            program_role=program_role,
+            emitter_role=emitter_role,
+        )
+    # Unknown kind: refuse to guess.
+    return None
+
+
 def _run_test_case(case: TestCase, graded: GradedSubmission) -> TestOutcome:
     """Compile must succeed before we attempt to run any tests.
 
@@ -366,10 +472,17 @@ def _run_test_case(case: TestCase, graded: GradedSubmission) -> TestOutcome:
             error="code did not compile; see compile errors in the main report",
         )
 
-    # Candidates to try. Once one works, graded.selected_main_class
+    # Candidates to try. The synthetic _AGTester (when present) goes
+    # first, then the student's detected mains as a fallback if the
+    # synthetic class can't be loaded (e.g. javac dropped it because of
+    # an upstream error). Once one runs, graded.selected_main_class
     # caches the winner so subsequent tests go straight to it.
     if graded.selected_main_class is not None:
         candidates = [graded.selected_main_class]
+        fallbacks = [c for c in graded.main_class_candidates
+                     if c != graded.selected_main_class]
+        if fallbacks:
+            candidates.extend(fallbacks)
     else:
         candidates = list(graded.main_class_candidates) or [
             graded.config.main_class]

@@ -1280,4 +1280,8 @@ def build_config(java_exe: str = "java",
         main_class="parser.Parser",
         class_roles=CLASS_ROLES,
         method_aliases=METHOD_ALIASES,
+        # Drive hidden tests through our own _AGTester.java so a student
+        # whose ParserTester hardcodes a filename doesn't silently re-run
+        # the same baked-in file for every test we feed.
+        synthetic_tester_kind="procedures",
     )

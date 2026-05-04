@@ -1069,21 +1069,27 @@ def _quick_review_lines(graded: GradedSubmission) -> List[str]:
         lines.append(f"Functional tests: all "
                      f"{len(graded.test_outcomes)} passed.")
 
-    # Surface which main class ran the tests. Teachers sometimes need to
-    # know the student put main in an unusual place -- this also flags the
-    # case where we fell through every candidate without finding one that
-    # loaded, which almost certainly means a runtime-incompatible entry.
+    # Surface which main class ran the tests. The synthetic _AGTester
+    # gets its own line so the teacher knows the score reflects the
+    # student's pipeline (driven by us), not the student's tester (which
+    # may have hardcoded filenames).
     selected = getattr(graded, "selected_main_class", None)
     candidates = getattr(graded, "main_class_candidates", None) or []
+    synthetic = getattr(graded, "synthetic", None)
     if graded.compile_result.success and selected:
-        if len(candidates) > 1 and candidates[0] != selected:
-            # We had to fall back off the top-ranked candidate.
+        if synthetic is not None and selected == synthetic.fq_class:
+            note = ("Hidden tests driven by the autograder's synthetic "
+                    "ParserTester so a student's hardcoded filename can't "
+                    "mask wrong output.")
+            if synthetic.notes:
+                note += " (" + "; ".join(synthetic.notes) + ")"
+            lines.append(note)
+        elif len(candidates) > 1 and candidates[0] != selected:
             lines.append(
                 f"Main-class probe: ran tests against {selected} "
                 f"(top candidate {candidates[0]} did not load)."
             )
         elif selected not in ("parser.Parser",):
-            # Non-default entry point worth calling out.
             lines.append(f"Main-class probe: tests ran against {selected}.")
 
     if doc_fails:
