@@ -1,7 +1,7 @@
 # ATCS Compilers Autograder
 
 A reusable, lab-pluggable autograder for the ATCS Compilers & Interpreters
-sequence. Three labs are currently wired up:
+sequence. Four labs are currently wired up:
 
 - **Procedures** (`autograders/ag-procedures/`) — grades a `Compiler/`
   folder of Java sources implementing a Pascal interpreter. Hidden
@@ -12,6 +12,14 @@ sequence. Three labs are currently wired up:
   for Lab 5 (MIPS assembly), running each in the bundled MARS 4.5
   simulator and matching stdout against the official 7-row peer
   review (52 pts).
+- **Subroutines** (`autograders/ag-subroutines/`) — grades a folder of
+  `.asm` files for the Memory and Subroutines lab. Drives each of
+  max2 / max3 / fact / fib through MARS with peer-review-derived
+  inputs (including negatives for max2/max3), inspects the source for
+  the structural requirements the rubric calls out (`jal max2` inside
+  max3, recursion + stack discipline inside fact / fib), and flags
+  the linked-list row REVIEW with the heap-vs-stack approach it
+  detected. Mirrors the official 6-row peer review (85 pts).
 - **CodeGen** (`autograders/ag-codegen/`) — grades a `Compiler/`
   folder whose Pascal-to-MIPS emitter must produce assembly that runs
   correctly under MARS. Same synthetic-driver pattern as Procedures:
@@ -27,17 +35,24 @@ Every student submission is a `.zip`. The tool produces a colour-coded
 PDF "blanksheet" report that mirrors the peer checkoff rubric, walks
 each deliverable to verify it has the required documentation and
 behaves as the lab specifies, and finishes with a quick review box and
-overall score. Both labs share the same banner / Quick Review / rubric
-layout so a teacher who can skim one can skim the other.
+overall score. Every lab shares the same banner / Quick Review /
+rubric layout so a teacher who can skim one can skim the others.
 
-The two labs answer slightly different questions:
+The labs answer slightly different questions:
 - **Procedures** — does the student's interpreter correctly run a
   hidden test suite of PASCAL programs? (Tests are inputs to a
   student-built tool, so a "hidden test suite" makes sense.)
-- **MIPS** — for each lab exercise, did the student deliver an `.asm`
-  with proper documentation that produces the expected output?
-  (The exercises ARE the deliverables; there is no separate "hidden
-  test suite" — the autograder verifies each exercise directly.)
+- **MIPS** / **Subroutines** — for each lab exercise, did the student
+  deliver an `.asm` with proper documentation that produces the
+  expected output? (The exercises ARE the deliverables; there is no
+  separate "hidden test suite" — the autograder verifies each
+  exercise directly.) Subroutines additionally inspects the source
+  for the structural requirements the peer-review sheet calls out
+  (max3 must `jal max2`; fact must be recursive with stack
+  discipline; etc.).
+- **CodeGen** — does the student's Pascal → MIPS emitter produce
+  assembly that, when fed back to MARS, prints the right thing for
+  the two lab-required programs (parserTest9 + max)?
 
 The blanksheet is **deliberately identical** across students so the
 teacher can scan for red cells and move on.
@@ -129,6 +144,10 @@ Drop a student's submission zip somewhere and run the appropriate lab:
 # MIPS (.asm files):
 ./autograders/ag-mips/ag-mips path/to/MIPS.zip \
     -o ag-tests/mips/outputs/
+
+# Subroutines (.asm files):
+./autograders/ag-subroutines/ag-subroutines path/to/Subroutines.zip \
+    -o ag-tests/subroutines/outputs/
 ```
 
 You should see one line per grading stage and then:
@@ -152,8 +171,14 @@ ag-tests/
 ├── procedures/
 │   ├── inputs/        <- student Compiler.zip files for the Procedures lab
 │   └── outputs/       <- generated PDF reports + overall.pdf
-└── mips/
-    ├── inputs/        <- student MIPS.zip files for the MIPS lab
+├── mips/
+│   ├── inputs/        <- student MIPS.zip files for the MIPS lab
+│   └── outputs/       <- generated PDF reports + overall.pdf
+├── subroutines/
+│   ├── inputs/        <- student .zip files for the Subroutines lab
+│   └── outputs/       <- generated PDF reports + overall.pdf
+└── codegen/
+    ├── inputs/        <- student Compiler.zip files for the CodeGen lab
     └── outputs/       <- generated PDF reports + overall.pdf
 ```
 
@@ -186,6 +211,18 @@ push student work into the repo.
 # Whole folder:
 ./autograders/ag-mips/ag-mips ag-tests/mips/inputs/ \
     -o ag-tests/mips/outputs/
+```
+
+### Subroutines lab
+
+```bash
+# Single student:
+./autograders/ag-subroutines/ag-subroutines path/to/student.zip \
+    -o ag-tests/subroutines/outputs/
+
+# Whole folder:
+./autograders/ag-subroutines/ag-subroutines ag-tests/subroutines/inputs/ \
+    -o ag-tests/subroutines/outputs/
 ```
 
 ### CodeGen lab
@@ -255,8 +292,10 @@ python3 autograders/ag-mips/grade.py \
 ### CLI options
 
 ```
-ag-procedures INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
-ag-mips       INPUT [-o OUTPUT_DIR] [--java JAVA]                 [--keep-temp]
+ag-procedures   INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
+ag-mips         INPUT [-o OUTPUT_DIR] [--java JAVA]                 [--keep-temp]
+ag-subroutines  INPUT [-o OUTPUT_DIR] [--java JAVA]                 [--keep-temp]
+ag-codegen      INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
 ```
 
 - `INPUT`: a `.zip` or a directory containing `.zip` files. Non-zip
@@ -293,6 +332,28 @@ submission, scores every candidate, and probes them in order — so a
 student whose main lives in `ParserTester` is still graded correctly.
 The Quick Review box notes which main class actually ran when it
 wasn't the default.
+
+### Subroutines
+
+Students zip a folder of `.asm` files, one per subroutine they wrote.
+The expected deliverables (per the Subroutines lab PDF) are:
+
+- `max2.asm` — subroutine returning the greater of two ints, with a
+  driver that prompts and prints the result
+- `max3.asm` — subroutine returning the greatest of three ints; the
+  rubric explicitly requires this to call `max2` rather than
+  re-doing the comparison locally
+- `fact.asm` — recursive factorial with proper $ra push/pop
+- `fib.asm` — recursive Fibonacci
+- `sumlist.asm` / `linkedlist.asm` — linked-list deliverable
+  (rubric row asks the peer to circle "heap" or "stack"; the
+  autograder detects which approach the student used)
+
+The fuzzy filename matcher is generous: a student who saved
+factorial.asm as `factor.asm` or `ex_fact.asm` still gets credit for
+the fact row. Each subroutine is tested with multiple inputs
+(including negatives for max2 / max3, and a recursion depth that
+forces real stack discipline for fact / fib).
 
 ### MIPS
 
@@ -383,13 +444,25 @@ autograder-work/
 │   │   ├── ag-procedures               # bash wrapper
 │   │   ├── config.py
 │   │   └── tests/                      # PASCAL programs + expected.json
-│   └── ag-mips/
+│   ├── ag-mips/
+│   │   ├── grade.py
+│   │   ├── ag-mips                     # bash wrapper
+│   │   ├── config.py
+│   │   └── tests/                      # reserved for future per-test
+│   │                                   #   files; current setup keeps
+│   │                                   #   stdin inline in config.py
+│   ├── ag-subroutines/
+│   │   ├── grade.py
+│   │   ├── ag-subroutines              # bash wrapper
+│   │   ├── config.py
+│   │   └── tests/                      # reserved for future per-test
+│   │                                   #   files; stdin lives inline in
+│   │                                   #   config.py
+│   └── ag-codegen/
 │       ├── grade.py
-│       ├── ag-mips                     # bash wrapper
+│       ├── ag-codegen                  # bash wrapper
 │       ├── config.py
-│       └── tests/                      # reserved for future per-test
-│                                       #   files; current setup keeps
-│                                       #   stdin inline in config.py
+│       └── tests/
 └── ag-tests/                            # gitignored
     ├── procedures/
     │   ├── inputs/                     # student zips
