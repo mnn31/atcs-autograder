@@ -26,7 +26,8 @@ from . import (
     synthetic_tester,
 )
 from .proximity import ProximityFinding
-from .role_resolver import RoleSpec, resolve_class_role, resolve_method
+from .role_resolver import (RoleSpec, resolve_class_role,
+                            resolve_class_role_all, resolve_method)
 from .rubric import CheckResult, GradedItem, RubricItem
 
 
@@ -40,6 +41,14 @@ class TestCase:
     expected_stdout: List[str]       # Exact lines expected (no "---" lines).
     stdin_text: Optional[str] = None
     timeout: int = 30
+    # Optional matching mode hint, consulted by lab-specific test runners
+    # that wrap the default (eg. agcore.scanner_runner). The default
+    # runner ignores it. "exact" means stdout must equal expected_stdout
+    # line-for-line; lab runners may add their own modes (eg. the
+    # Scanner lab uses "prefix_then_error" for the unknown-character
+    # case). Keep this small and lab-scoped -- the orchestrator should
+    # not have to know about per-lab modes.
+    match_mode: str = "exact"
 
 
 @dataclass
@@ -179,6 +188,29 @@ class GradedSubmission:
             resolved = resolve_class_role(self.classes, spec)
         self._role_cache[role] = resolved
         return resolved
+
+    def classes_for_role(
+        self, role: str
+    ) -> List[javadoc_parser.ClassRecord]:
+        """All classes scoring at or above the role's accept threshold.
+
+        Used when one rubric concept can legitimately span multiple
+        classes -- the canonical example is the Procedures lab's
+        Environment, which a student may have split into
+        GlobalEnvironment + LocalEnvironment per the lab text's
+        "many ways we could implement this model". Rubric checkers
+        that look for declareVariable / setVariable / getVariable
+        should accept any of those methods anywhere in this list,
+        rather than insisting they all live on the same class.
+
+        Falls back to a single-element list (or empty) when the lab
+        didn't configure a RoleSpec for this role.
+        """
+        spec = self.config.class_roles.get(role)
+        if spec is None:
+            cls = self.class_by_name(role)
+            return [cls] if cls is not None else []
+        return resolve_class_role_all(self.classes, spec)
 
     def all_methods(self) -> List[javadoc_parser.MethodRecord]:
         """Flat list of every method across every class."""
@@ -433,16 +465,26 @@ def _maybe_build_synthetic_tester(
             return None
         return resolve_class_role(classes, spec)
 
+    def _resolve_all(role_name: str):
+        spec = config.class_roles.get(role_name)
+        if spec is None:
+            return [c for c in classes if c.name == role_name]
+        return resolve_class_role_all(classes, spec)
+
     parser_role = _resolve("Parser")
     program_role = _resolve("Program")
 
     if kind == "procedures":
-        environment_role = _resolve("Environment")
+        # Method-2 (Global/Local split) means there can be more than
+        # one env-shaped class. Pick the one that looks most like a
+        # "global" env to drive program.exec, since that is what the
+        # student's main interpreter would construct top-level.
+        env_role = _pick_global_env(_resolve_all("Environment"))
         return synthetic_tester.build_for_procedures(
             classes, compiler_root,
             parser_role=parser_role,
             program_role=program_role,
-            environment_role=environment_role,
+            environment_role=env_role,
         )
     if kind == "codegen":
         emitter_role = _resolve("Emitter")
@@ -452,8 +494,54 @@ def _maybe_build_synthetic_tester(
             program_role=program_role,
             emitter_role=emitter_role,
         )
+    if kind == "scanner":
+        scanner_role = _resolve("Scanner")
+        return synthetic_tester.build_for_scanner(
+            classes, compiler_root,
+            scanner_role=scanner_role,
+        )
+    if kind == "parser":
+        return synthetic_tester.build_for_parser(
+            classes, compiler_root,
+            parser_role=parser_role,
+        )
+    if kind == "ast":
+        env_role = _pick_global_env(_resolve_all("Environment"))
+        return synthetic_tester.build_for_ast(
+            classes, compiler_root,
+            parser_role=parser_role,
+            environment_role=env_role,
+        )
     # Unknown kind: refuse to guess.
     return None
+
+
+def _pick_global_env(env_candidates):
+    """Pick the most "global" env class from a list of env-shaped classes.
+
+    Used by the procedures synthetic-tester pass when a student split
+    Environment into Global + Local classes. Selection rules in order:
+      1. A class whose name contains "global" wins.
+      2. A class that has a no-arg constructor wins (the local class
+         typically has only the (parent,) ctor).
+      3. A class whose name does NOT contain "local" wins.
+      4. Fall back to the first candidate (resolver's top scorer).
+    Returns None for an empty input.
+    """
+    if not env_candidates:
+        return None
+    for cls in env_candidates:
+        if "global" in cls.name.lower():
+            return cls
+    no_arg = [c for c in env_candidates
+              if any(m.method_name == c.name and not m.params
+                     for m in c.methods)]
+    if no_arg:
+        # Prefer a no-arg ctor that ALSO doesn't have "local" in the name.
+        not_local = [c for c in no_arg if "local" not in c.name.lower()]
+        return (not_local or no_arg)[0]
+    not_local = [c for c in env_candidates if "local" not in c.name.lower()]
+    return (not_local or env_candidates)[0]
 
 
 def _run_test_case(case: TestCase, graded: GradedSubmission) -> TestOutcome:

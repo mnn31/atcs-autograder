@@ -98,23 +98,38 @@ class Submission:
         return name_to_filename_slug(self.student_name)
 
 
-def extract(zip_path: str | Path) -> Submission:
+def extract(zip_path: str | Path,
+            required_subdirs: "tuple[str, ...] | None" = None,
+            min_subdir_hits: int = 3) -> Submission:
     """Unzip the submission and locate the Compiler folder.
 
     Args:
         zip_path: path to the student's .zip submission.
+        required_subdirs: subdir names that mark a Compiler-root. Defaults
+            to REQUIRED_SUBDIRS for full-tree labs (Procedures, AST,
+            CodeGen). Early labs that only ship a slice should override:
+            Scanner lab passes `("scanner",)` with min_subdir_hits=1;
+            Parser lab passes `("scanner", "parser")` with
+            min_subdir_hits=2. Keeping the parameter on the call signature
+            (rather than burying it in a LabConfig field) means a tool
+            doing extraction-only flows can pass it directly.
+        min_subdir_hits: minimum number of required_subdirs that must
+            actually be present. The default (3) matches historical
+            behaviour for the Procedures-and-later labs that ship a
+            full Compiler tree.
 
     Returns:
         Submission with workdir, compiler_root, and student_name filled in.
 
     Raises:
         FileNotFoundError: zip_path doesn't exist.
-        ValueError: extraction did not yield a Compiler-looking folder (no
-            ast/ or parser/ could be located anywhere inside).
+        ValueError: extraction did not yield a Compiler-looking folder.
     """
     zip_path = Path(zip_path)
     if not zip_path.exists():
         raise FileNotFoundError(f"zip not found: {zip_path}")
+
+    subdirs = tuple(required_subdirs) if required_subdirs else REQUIRED_SUBDIRS
 
     workdir = Path(tempfile.mkdtemp(prefix="autograder_"))
     try:
@@ -124,12 +139,14 @@ def extract(zip_path: str | Path) -> Submission:
         shutil.rmtree(workdir, ignore_errors=True)
         raise ValueError(f"not a valid zip file: {zip_path}") from exc
 
-    compiler_root = _find_compiler_root(workdir)
+    compiler_root = _find_compiler_root(
+        workdir, required_subdirs=subdirs, min_hits=min_subdir_hits)
     if compiler_root is None:
         shutil.rmtree(workdir, ignore_errors=True)
         raise ValueError(
             f"could not locate a Compiler folder inside {zip_path.name}. "
-            f"Expected subdirs: {', '.join(REQUIRED_SUBDIRS)}."
+            f"Expected at least {min_subdir_hits} of these subdirs: "
+            f"{', '.join(subdirs)}."
         )
 
     student_name = (most_common_student_author(compiler_root)
@@ -138,7 +155,9 @@ def extract(zip_path: str | Path) -> Submission:
                       student_name=student_name)
 
 
-def _find_compiler_root(root: Path) -> Path | None:
+def _find_compiler_root(root: Path,
+                        required_subdirs: "tuple[str, ...]" = REQUIRED_SUBDIRS,
+                        min_hits: int = 3) -> Path | None:
     """Walk under root looking for the directory that holds the required
     subdirs. Skips __MACOSX junk.
 
@@ -148,8 +167,8 @@ def _find_compiler_root(root: Path) -> Path | None:
     for dirpath, dirnames, _ in os.walk(root):
         dirnames[:] = [d for d in dirnames if d != "__MACOSX"]
         names = set(dirnames)
-        hits = sum(1 for want in REQUIRED_SUBDIRS if want in names)
-        if hits >= 3:
+        hits = sum(1 for want in required_subdirs if want in names)
+        if hits >= min_hits:
             candidates.append((hits, Path(dirpath)))
     if not candidates:
         return None

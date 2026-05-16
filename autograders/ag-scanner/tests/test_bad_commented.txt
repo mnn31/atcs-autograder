@@ -1,0 +1,4 @@
+x := 5;
+// $ this is now a comment
+y := 6;
+.

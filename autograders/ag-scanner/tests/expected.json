@@ -1,0 +1,51 @@
+{
+  "test_basic_comment": {
+    "description": "Skips // single-line comments, returns each identifier/operator/number as its own token, terminates on the trailing period with an EOF token.",
+    "expected": [
+      "x", "=", "x", "+", "3", "/", "5", "-", "y",
+      "y", "=", "z", "%", "5",
+      "EOF"
+    ]
+  },
+  "test_multichar": {
+    "description": "Returns the two-character operators <=, >=, <>, and := as single tokens (not as two separate ones).",
+    "expected": [
+      "a", "<=", "b",
+      "c", ">=", "d",
+      "e", "<>", "f",
+      "g", ":=", "h",
+      "EOF"
+    ]
+  },
+  "test_period_eof": {
+    "description": "A period in the source returns 'EOF' and hasNext() becomes false, so any tokens after the period are not scanned.",
+    "expected": [
+      "x", ":=", "5", ";",
+      "y", ":=", "x", "+", "1", ";",
+      "EOF"
+    ]
+  },
+  "test_error_dollar": {
+    "description": "Encountering '$' (an unrecognized character) raises ScanErrorException. Driver catches it and emits an ERROR line; tokens before the bad char appear first.",
+    "expected": [
+      "x", ":=", "5", ";"
+    ],
+    "match_mode": "prefix_then_error"
+  },
+  "test_bad_removed": {
+    "description": "Scanner works cleanly once the line containing the unknown character is removed.",
+    "expected": [
+      "x", ":=", "5", ";",
+      "y", ":=", "6", ";",
+      "EOF"
+    ]
+  },
+  "test_bad_commented": {
+    "description": "Commenting out the bad character with // makes the scanner skip it; no error and tokens scan cleanly.",
+    "expected": [
+      "x", ":=", "5", ";",
+      "y", ":=", "6", ";",
+      "EOF"
+    ]
+  }
+}

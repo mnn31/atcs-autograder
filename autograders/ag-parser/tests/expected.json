@@ -1,0 +1,22 @@
+{
+  "parserTest0": {
+    "description": "Single WRITELN expression. Smoke-test that the parser drives the WRITELN production and prints the number.",
+    "expected": ["3"]
+  },
+  "parserTest1": {
+    "description": "Operator precedence across *, /. Three WRITELN lines exercising left-associative * and /, including a parenthesised sub-expression.",
+    "expected": ["4", "9", "1"]
+  },
+  "parserTest2": {
+    "description": "Mixed + and * precedence. Three WRITELN lines that fail unless the parser distinguishes term-level vs. expression-level operators.",
+    "expected": ["14", "10", "20"]
+  },
+  "parserTest3": {
+    "description": "Nested BEGIN/END blocks containing WRITELN statements; tests block-statement parsing recursion.",
+    "expected": ["1", "2", "3"]
+  },
+  "parserTest4": {
+    "description": "Assignment + variable use + arithmetic + WRITELN inside a BEGIN/END block; the program defines x and y then prints x * y.",
+    "expected": ["15"]
+  }
+}

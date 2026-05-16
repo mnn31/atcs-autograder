@@ -58,6 +58,9 @@ from .javadoc_parser import ClassRecord, MethodRecord
 # being a legal Java identifier.
 PROCEDURES_TESTER_CLASS = "_AGTester"
 CODEGEN_TESTER_CLASS = "_AGCodeGenTester"
+SCANNER_TESTER_CLASS = "_AGScannerTester"
+PARSER_TESTER_CLASS = "_AGParserTester"
+AST_TESTER_CLASS = "_AGASTTester"
 
 
 @dataclass
@@ -307,6 +310,214 @@ def build_for_codegen(
     )
 
 
+def build_for_scanner(
+    classes: Sequence[ClassRecord],
+    compiler_root: Path,
+    scanner_role: Optional[ClassRecord],
+) -> Optional[SyntheticTester]:
+    """Emit `_AGScannerTester.java` driving a Scanner-lab submission.
+
+    The driver opens args[0] as a FileInputStream, wraps it in the
+    student's Scanner, and prints one token per line until "EOF" is
+    returned or hasNext() goes false. ScanErrorException (or any
+    runtime exception) is caught and printed as `ERROR: <msg>` on its
+    own line so the matcher can verify "throws on $/^" without
+    crashing the JVM.
+
+    Returns None if no Scanner-shaped class is resolvable.
+    """
+    if scanner_role is None:
+        # Last-ditch: try the canonical name even when role resolution failed
+        # (eg. javalang choked on Scanner.java due to a syntax error).
+        scanner_fq = _scanner_class_fq(classes)
+        if scanner_fq is None:
+            return None
+        scanner_pkg = scanner_fq.rsplit(".", 1)[0] if "." in scanner_fq else ""
+    else:
+        scanner_fq = _fq(scanner_role)
+        scanner_pkg = _package_of_file(scanner_role.file)
+
+    notes: List[str] = []
+    # The synthetic driver lives in the SAME package as the resolved Scanner,
+    # so we don't have to worry about package visibility for the Scanner
+    # ctor. If the Scanner lives in the default package (rare but legal),
+    # the driver lands there too.
+    pkg_line = f"package {scanner_pkg};\n\n" if scanner_pkg else ""
+    src = _render(_SCANNER_TEMPLATE, {
+        "PACKAGE_LINE": pkg_line,
+        "SCANNER_FQ": scanner_fq,
+        "TESTER_CLASS": SCANNER_TESTER_CLASS,
+    })
+
+    out_dir = compiler_root / scanner_pkg if scanner_pkg else compiler_root
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{SCANNER_TESTER_CLASS}.java"
+    out.write_text(src, encoding="utf-8")
+    fq = f"{scanner_pkg}.{SCANNER_TESTER_CLASS}" if scanner_pkg \
+        else SCANNER_TESTER_CLASS
+    return SyntheticTester(source_path=out, fq_class=fq, notes=notes)
+
+
+def build_for_parser(
+    classes: Sequence[ClassRecord],
+    compiler_root: Path,
+    parser_role: Optional[ClassRecord],
+) -> Optional[SyntheticTester]:
+    """Emit `_AGParserTester.java` for the Pascal Parser lab.
+
+    In this lab the parser EXECUTES Pascal as it parses (no AST).
+    parseStatement is a `void` method with the side-effect of printing
+    WRITELN values to stdout. The driver creates a Parser, then calls
+    parseStatement repeatedly while scanner.hasNext() returns true.
+
+    Returns None if no Parser class with a parseStatement-shaped method
+    is resolvable -- the orchestrator then falls back to the student's
+    own main.
+    """
+    if parser_role is None:
+        return None
+
+    parse_method = _find_method_alias(
+        parser_role,
+        ("parseStatement", "parseStmt", "parseStatements"),
+        must_be_zero_arg=True,
+    )
+    if parse_method is None:
+        # Some lab variants only expose parseProgram / runProgram. Accept
+        # those too so a slightly-different submission can still be tested.
+        parse_method = _find_method_alias(
+            parser_role,
+            ("parseProgram", "runProgram", "parseProg",
+             "parsePascal", "parse"),
+            must_be_zero_arg=True,
+        )
+        if parse_method is None:
+            return None
+        loop_body = (
+            f"parser.{parse_method.method_name}();\n"
+            f"            break;  // single-call entry; no loop needed"
+        )
+    else:
+        loop_body = f"parser.{parse_method.method_name}();"
+
+    notes: List[str] = []
+    parser_fq = _fq(parser_role)
+    scanner_fq = _scanner_class_fq(classes) or "scanner.Scanner"
+
+    src = _render(_PARSER_TEMPLATE, {
+        "PARSER_FQ": parser_fq,
+        "SCANNER_FQ": scanner_fq,
+        "LOOP_BODY": loop_body,
+        "TESTER_CLASS": PARSER_TESTER_CLASS,
+    })
+
+    out = compiler_root / "parser" / f"{PARSER_TESTER_CLASS}.java"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(src, encoding="utf-8")
+    return SyntheticTester(
+        source_path=out,
+        fq_class=f"parser.{PARSER_TESTER_CLASS}",
+        notes=notes,
+    )
+
+
+def build_for_ast(
+    classes: Sequence[ClassRecord],
+    compiler_root: Path,
+    parser_role: Optional[ClassRecord],
+    environment_role: Optional[ClassRecord],
+) -> Optional[SyntheticTester]:
+    """Emit `_AGASTTester.java` for the AST lab.
+
+    The Parser produces AST nodes; parseStatement returns a Statement
+    whose `exec(env)` we then call. The driver creates a fresh
+    Environment, then loops calling parseStatement + stmt.exec while
+    scanner.hasNext() is true.
+
+    If parseStatement isn't visible (e.g. the student went straight to
+    a parseProgram-shaped entry point that returns a Program with an
+    exec method) we degrade gracefully to that shape -- same as the
+    procedures driver does.
+    """
+    if parser_role is None:
+        return None
+
+    notes: List[str] = []
+
+    parse_stmt = _find_method_alias(
+        parser_role,
+        ("parseStatement", "parseStmt"),
+        must_be_zero_arg=True,
+    )
+    parse_prog = _find_method_alias(
+        parser_role,
+        ("parseProgram", "runProgram", "parseProg",
+         "parsePascal", "parse"),
+        must_be_zero_arg=True,
+    )
+
+    if parse_stmt is None and parse_prog is None:
+        return None
+
+    parser_fq = _fq(parser_role)
+    scanner_fq = _scanner_class_fq(classes) or "scanner.Scanner"
+    env_fq, env_init = _environment_init(environment_role, notes)
+
+    if parse_stmt is not None:
+        # Loop: read statement-by-statement, exec each.
+        rt = (parse_stmt.return_type or "").split(".")[-1].strip()
+        # Most students name the parent class Statement; tolerate Stmt too.
+        stmt_type = rt if rt and rt != "void" else "ast.Statement"
+        if stmt_type == "Statement":
+            stmt_type = "ast.Statement"
+        loop_body = (
+            f"{stmt_type} stmt = parser.{parse_stmt.method_name}();\n"
+            f"            if (stmt != null) stmt.exec(env);"
+        )
+    else:
+        # Single parseProgram entry. If it returns void, just call it; if
+        # it returns a Program-shaped object, call exec on it.
+        rt = (parse_prog.return_type or "").strip()
+        rt_short = rt.split(".")[-1] if rt else ""
+        if rt_short in ("void", ""):
+            loop_body = (
+                f"parser.{parse_prog.method_name}();\n"
+                f"            break;  // single-call entry; no loop needed"
+            )
+        else:
+            # Try exec on the returned object; fall back to ignoring it.
+            loop_body = (
+                f"{rt} _ag_prog = parser.{parse_prog.method_name}();\n"
+                f"            if (_ag_prog != null) {{\n"
+                f"                try {{ _ag_prog.getClass().getMethod(\"exec\","
+                f" {env_fq}.class).invoke(_ag_prog, env); }}\n"
+                f"                catch (NoSuchMethodException __) {{ /* no exec; ok */ }}\n"
+                f"            }}\n"
+                f"            break;"
+            )
+            notes.append(
+                f"parseProgram returns {rt!r}; using reflective exec"
+            )
+
+    src = _render(_AST_TEMPLATE, {
+        "PARSER_FQ": parser_fq,
+        "SCANNER_FQ": scanner_fq,
+        "ENV_FQ": env_fq,
+        "ENV_INIT": env_init,
+        "LOOP_BODY": loop_body,
+        "TESTER_CLASS": AST_TESTER_CLASS,
+    })
+
+    out = compiler_root / "parser" / f"{AST_TESTER_CLASS}.java"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(src, encoding="utf-8")
+    return SyntheticTester(
+        source_path=out,
+        fq_class=f"parser.{AST_TESTER_CLASS}",
+        notes=notes,
+    )
+
+
 def _environment_init(env_cls: Optional[ClassRecord],
                       notes: List[str]) -> tuple:
     """Pick `new Environment(...)` shape based on what ctors exist.
@@ -494,6 +705,135 @@ public class __TESTER_CLASS__
         __PARSER_FQ__ parser = new __PARSER_FQ__(__PARSER_CTOR_ARGS__);
         __PROGRAM_FQ__ program = parser.__PARSE_METHOD__();
         __COMPILE_CALL__
+    }
+}
+"""
+
+
+# Scanner driver. Lands in the SAME package as the student's Scanner so we
+# can call its package-private members without import gymnastics. Each
+# token is printed on its own line; on ScanError (or any throwable) we
+# print "ERROR: <msg>" so the test runner can verify "throws on $/^".
+_SCANNER_TEMPLATE = """\
+__PACKAGE_LINE__import java.io.FileInputStream;
+
+/**
+ * Autograder-generated Scanner driver. Loads args[0] as the test source
+ * file and prints one token per line until EOF or hasNext()==false.
+ * Replaces the student's own ScannerTester for hidden-test runs so a
+ * hardcoded test filename in their tester can't make every test
+ * silently re-run the same baked-in file.
+ */
+public class __TESTER_CLASS__
+{
+    public static void main(String[] args) throws Exception
+    {
+        if (args.length < 1)
+        {
+            System.err.println("usage: __TESTER_CLASS__ <test-file>");
+            System.exit(2);
+        }
+        FileInputStream in = new FileInputStream(args[0]);
+        __SCANNER_FQ__ s = new __SCANNER_FQ__(in);
+        // Cap on tokens emitted so a buggy hasNext() that always returns
+        // true can't fill the disk. 100k tokens is well above any real
+        // scanner test file's worth.
+        int safety = 100000;
+        while (safety-- > 0)
+        {
+            String tok;
+            try
+            {
+                tok = s.nextToken();
+            }
+            catch (Throwable t)
+            {
+                String msg = t.getMessage();
+                if (msg == null) msg = t.getClass().getSimpleName();
+                System.out.println("ERROR: " + msg);
+                break;
+            }
+            if (tok == null)
+            {
+                System.out.println("EOF");
+                break;
+            }
+            System.out.println(tok);
+            if (tok.equals("EOF")) break;
+            if (!s.hasNext()) break;
+        }
+    }
+}
+"""
+
+# Parser driver (execute-while-parsing flavour, no AST). The
+# student's parseStatement is void. We loop while scanner.hasNext().
+_PARSER_TEMPLATE = """\
+package parser;
+
+import java.io.FileInputStream;
+
+/**
+ * Autograder-generated Parser driver. Loads args[0] as the test source
+ * file and runs the student's parser through every statement until
+ * scanner.hasNext() goes false. The parser's parseStatement side-effect
+ * is to print WRITELN values.
+ */
+public class __TESTER_CLASS__
+{
+    public static void main(String[] args) throws Exception
+    {
+        if (args.length < 1)
+        {
+            System.err.println("usage: __TESTER_CLASS__ <test-file>");
+            System.exit(2);
+        }
+        FileInputStream in = new FileInputStream(args[0]);
+        __SCANNER_FQ__ scanner = new __SCANNER_FQ__(in);
+        __PARSER_FQ__ parser = new __PARSER_FQ__(scanner);
+        // Safety bound so a buggy hasNext() can't loop forever.
+        int safety = 100000;
+        while (scanner.hasNext() && safety-- > 0)
+        {
+            __LOOP_BODY__
+        }
+    }
+}
+"""
+
+# AST driver. Parser returns AST nodes; we exec each one against a
+# shared environment. The env may be split into Global/Local in some
+# submissions, so the picker in build_for_ast hands us the one that
+# looks most global.
+_AST_TEMPLATE = """\
+package parser;
+
+import java.io.FileInputStream;
+
+/**
+ * Autograder-generated AST driver. Loads args[0] as the test source
+ * file, parses each statement into an AST node, and execs it in a
+ * shared Environment. Replaces the student's own ParserTester for the
+ * hidden test suite.
+ */
+public class __TESTER_CLASS__
+{
+    public static void main(String[] args) throws Exception
+    {
+        if (args.length < 1)
+        {
+            System.err.println("usage: __TESTER_CLASS__ <test-file>");
+            System.exit(2);
+        }
+        FileInputStream in = new FileInputStream(args[0]);
+        __SCANNER_FQ__ scanner = new __SCANNER_FQ__(in);
+        __ENV_FQ__ env = __ENV_INIT__;
+        __PARSER_FQ__ parser = new __PARSER_FQ__(scanner);
+        int safety = 100000;
+        while (scanner.hasNext() && safety-- > 0)
+        {
+            __LOOP_BODY__
+        }
     }
 }
 """

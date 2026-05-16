@@ -1,0 +1,22 @@
+{
+  "parserTest6": {
+    "description": "Required rubric test: assignment + arithmetic, IF with a BEGIN/END consequence, WHILE loop counting 0..9. Exercises the entire AST set through exec/eval.",
+    "expected": [
+      "15", "5", "3",
+      "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
+    ],
+    "file": "parserTest6.txt"
+  },
+  "parserTest4_5ForLoopReadln": {
+    "description": "Required rubric test (input = 42): READLN, FOR-loop with growing accumulator, and a WHILE-loop that counts back down by 2 from 120 to 76.",
+    "expected": [
+      "84",
+      "42", "43", "45", "48", "52", "57", "63", "70", "78", "87", "97", "108",
+      "120",
+      "120", "118", "116", "114", "112", "110", "108", "106", "104", "102",
+      "100", "98", "96", "94", "92", "90", "88", "86", "84", "82", "80", "78", "76"
+    ],
+    "stdin": "42\n",
+    "file": "parserTest4.5ForLoopReadln.txt"
+  }
+}

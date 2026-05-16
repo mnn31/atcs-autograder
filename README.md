@@ -1,8 +1,29 @@
 # ATCS Compilers Autograder
 
 A reusable, lab-pluggable autograder for the ATCS Compilers & Interpreters
-sequence. Four labs are currently wired up:
+sequence. Seven labs are currently wired up:
 
+- **Scanner** (`autograders/ag-scanner/`) — grades a folder containing
+  the student's `scanner/` package (lab 1). Generates a synthetic
+  `_AGScannerTester.java` that tokenises one input file at a time
+  and prints one token per line; rubric covers documentation,
+  multi-character tokens, period/EOF behaviour, single-line comment
+  handling, and the four `$/^` error-recovery scenarios from the
+  peer review (100 pts).
+- **Parser** (`autograders/ag-parser/`) — grades a folder containing
+  `scanner/` + `parser/` (lab 3). The Parser executes Pascal as it
+  parses (no AST yet); the synthetic `_AGParserTester` drives
+  `parseStatement` in a loop while `scanner.hasNext()` is true and
+  matches WRITELN output. Rubric covers documentation, package
+  layout, currentToken field, BEGIN/END blocks, and parserTest0..4
+  (100 pts).
+- **AST** (`autograders/ag-ast/`) — grades the AST-lab rewrite where
+  Parser returns AST nodes (lab 4). `_AGASTTester` parses each
+  statement and calls `stmt.exec(env)` on a shared Environment.
+  Rubric covers abstract Statement / Expression, exec/eval coverage
+  across every AST class, READLN + IF/ELSE + REPEAT..UNTIL support,
+  and the required parserTest6 + parserTest4.5ForLoopReadln tests
+  (100 pts).
 - **Procedures** (`autograders/ag-procedures/`) — grades a `Compiler/`
   folder of Java sources implementing a Pascal interpreter. Hidden
   tests are driven by an autograder-synthesised `_AGTester.java` so a
@@ -137,6 +158,18 @@ all live in `vendor/`.
 Drop a student's submission zip somewhere and run the appropriate lab:
 
 ```bash
+# Scanner (scanner/ folder only):
+./autograders/ag-scanner/ag-scanner path/to/Scanner.zip \
+    -o ag-tests/scanner/outputs/
+
+# Parser (scanner/ + parser/):
+./autograders/ag-parser/ag-parser path/to/Parser.zip \
+    -o ag-tests/parser/outputs/
+
+# AST (full Compiler/ folder):
+./autograders/ag-ast/ag-ast path/to/Compiler.zip \
+    -o ag-tests/ast/outputs/
+
 # Procedures (Java Compiler/ folder):
 ./autograders/ag-procedures/ag-procedures path/to/Compiler.zip \
     -o ag-tests/procedures/outputs/
@@ -292,6 +325,9 @@ python3 autograders/ag-mips/grade.py \
 ### CLI options
 
 ```
+ag-scanner      INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
+ag-parser       INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
+ag-ast          INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
 ag-procedures   INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
 ag-mips         INPUT [-o OUTPUT_DIR] [--java JAVA]                 [--keep-temp]
 ag-subroutines  INPUT [-o OUTPUT_DIR] [--java JAVA]                 [--keep-temp]
