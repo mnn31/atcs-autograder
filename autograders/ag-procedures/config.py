@@ -100,8 +100,18 @@ CLASS_ROLES = {
     ),
     "Environment": RoleSpec(
         preferred_name="Environment",
-        aliases=("Env", "Scope", "SymbolTable"),
-        name_tokens=[("environment",), ("scope",), ("symbol", "table")],
+        # The lab text explicitly says "there are many ways we could
+        # implement this model". Two common patterns:
+        #   (1) one Environment class with a parent pointer, OR
+        #   (2) a GlobalEnvironment / LocalEnvironment split.
+        # Both Global* and Local* score on the "environment" token so
+        # classes_for_role() returns both -- the rubric checkers below
+        # then aggregate methods across whichever classes exist.
+        aliases=("Env", "Scope", "SymbolTable",
+                 "GlobalEnvironment", "GlobalEnv", "GlobalScope",
+                 "LocalEnvironment", "LocalEnv", "LocalScope"),
+        name_tokens=[("environment",), ("scope",), ("symbol", "table"),
+                     ("global", "env"), ("local", "env")],
         preferred_dir="environment",
     ),
     "Parser": RoleSpec(
@@ -637,7 +647,15 @@ def _proccall_extends_and_eval(g: GradedSubmission) -> CheckResult:
             score += 1
         else:
             notes.append("eval does not call getProcedure on the env")
-        if "globalScope" in src or "getGlobal" in src or "new Environment" in src:
+        # Accept either env shape: a parent-pointer call (globalScope /
+        # getGlobal / `new Environment(...)`) OR explicit instantiation
+        # of a Local/Child/Scope-flavoured class for method-2 split env.
+        env_creation_patterns = (
+            "globalScope", "getGlobal",
+        )
+        if (any(p in src for p in env_creation_patterns)
+                or re.search(r"new\s+(?:Local|Child|Scope|Frame)?\w*"
+                             r"(?:Environment|Env|Scope)\b", src)):
             score += 1
         else:
             notes.append("no child environment created off the global one")
@@ -787,49 +805,140 @@ def _parse_program_and_procedure(g: GradedSubmission) -> CheckResult:
 
 
 def _env_hierarchy(g: GradedSubmission) -> CheckResult:
-    """Rubric row 11: Environment has parent-pointer + two constructors.
+    """Rubric row 11: hierarchy of parent and child environments.
 
-    Row 12 (declareVariable/setVariable/getVariable) is independent --
-    even if the hierarchy check fails, a student can still get full
-    credit for declare/set/get, and vice versa.
+    The lab text says "there are many ways we could implement this
+    model" and only describes the parent-pointer pattern as ONE option.
+    Two implementations both satisfy the rubric:
+
+      Method 1 (single class with parent pointer):
+        - one Environment class
+        - has a `parent` field of type Environment
+        - has two ctors: () and (Environment parent)
+
+      Method 2 (Global/Local split):
+        - two classes (GlobalEnvironment + LocalEnvironment, or similar)
+        - the local class holds a reference to the global one
+        - constructors split across the two classes
+
+    A submission that demonstrates EITHER shape gets full credit.
+    Row 12 (declareVariable/setVariable/getVariable) is independent.
     """
-    cls = g.class_for_role("Environment")
-    src = _role_source(g, "Environment") or ""
+    env_classes = g.classes_for_role("Environment")
     unparseable = _role_unparseable_note(g, "Environment")
-    if cls is None and not src:
-        return CheckResult(earned=0, notes="Environment role missing",
-                           severity=SEVERITY_MAJOR)
-    score = 0.0
-    notes: List[str] = []
-    if unparseable:
-        notes.append(unparseable)
-    # We look for the literal word "Environment" in the source even when the
-    # class is renamed: an Environment-like class almost always still imports
-    # or references the canonical superclass/parent type name somewhere.
-    cls_name = cls.name if cls is not None else "Environment"
-    if "parent" in src and ("Environment" in src or cls_name in src):
-        score += 3
-    else:
-        notes.append("no parent Environment reference")
-    # -- Count constructors. AST is exact; text-grep fallback counts
-    # `ClassName(...)` signatures (with a `{` following).
-    if cls is not None:
-        ctor_count = sum(1 for m in cls.methods if m.method_name == cls.name)
-    else:
-        # Find first class name in src and count its ctor signatures.
+    if not env_classes:
+        # Nothing AST-resolvable. Fall back to text grep on whatever
+        # source we can find for the role.
+        src = _role_source(g, "Environment") or ""
+        if not src:
+            return CheckResult(earned=0,
+                               notes="Environment role missing",
+                               severity=SEVERITY_MAJOR)
+        score = 3.0 if "parent" in src else 0.0
         m = re.search(r"\bclass\s+(\w+)\b", src)
         if m:
             cname = m.group(1)
             ctor_count = len(re.findall(
                 rf"\b{re.escape(cname)}\s*\([^)]*\)\s*(?:throws[^{{]*)?\{{",
                 src))
-        else:
-            ctor_count = 0
-    if ctor_count >= 2:
-        score += 3
+            if ctor_count >= 2:
+                score += 3.0
+        notes = [unparseable] if unparseable else []
+        if score < 6:
+            notes.append("could not verify env hierarchy structurally "
+                         "(file unparseable)")
+        return CheckResult(
+            earned=round(score, 1), notes="; ".join(notes),
+            severity=0 if score >= 6 else SEVERITY_MEDIUM,
+        )
+
+    score = 0.0
+    notes: List[str] = []
+    if unparseable:
+        notes.append(unparseable)
+    sources = {c.name: _read_source(g, c) for c in env_classes}
+
+    # -- Method 1 detection: a single class with parent + 2 ctors.
+    method1_class = None
+    for cls in env_classes:
+        src = sources.get(cls.name, "")
+        if not src:
+            continue
+        ctor_count = sum(1 for m in cls.methods if m.method_name == cls.name)
+        has_parent = bool(re.search(r"\bparent\b", src)) and (
+            "Environment" in src
+            or any(other.name in src for other in env_classes
+                   if other is not cls)
+        )
+        if ctor_count >= 2 and has_parent:
+            method1_class = cls
+            break
+
+    # -- Method 2 detection: two distinct env classes that compose.
+    method2 = None
+    if method1_class is None and len(env_classes) >= 2:
+        candidates = list(env_classes)
+        global_cls = next(
+            (c for c in candidates if "global" in c.name.lower()), None)
+        local_cls = next(
+            (c for c in candidates if "local" in c.name.lower()), None)
+        if global_cls is None and local_cls is None:
+            # No naming hint. Heuristic: the class whose ctor takes the
+            # other-shaped param is "local".
+            for a in candidates:
+                for b in candidates:
+                    if a is b:
+                        continue
+                    a_ctor = next((m for m in a.methods
+                                   if m.method_name == a.name and m.params),
+                                  None)
+                    if a_ctor is None:
+                        continue
+                    if any(b.name in p for p in a_ctor.params):
+                        local_cls, global_cls = a, b
+                        break
+                if local_cls is not None:
+                    break
+        if global_cls is None and local_cls is not None:
+            global_cls = next(c for c in candidates if c is not local_cls)
+        if local_cls is None and global_cls is not None:
+            local_cls = next(c for c in candidates if c is not global_cls)
+        if global_cls is not None and local_cls is not None:
+            local_src = sources.get(local_cls.name, "")
+            references_global = (
+                global_cls.name in local_src
+                or "Environment" in local_src
+                or "parent" in local_src
+                or "global" in local_src.lower()
+            )
+            if references_global:
+                method2 = (global_cls, local_cls)
+
+    if method1_class is not None:
+        score += 6.0
+        notes.append(f"single-class env with parent + 2 ctors "
+                     f"({method1_class.name})")
+    elif method2 is not None:
+        score += 6.0
+        notes.append(f"split env: global={method2[0].name}, "
+                     f"local={method2[1].name}")
     else:
-        notes.append("only one Environment constructor; need (no-arg) and "
-                     "(Environment parent) or a chained init that sets parent")
+        # Partial credit: ANY parent-shaped reference plus any second
+        # ctor or env class. Better than 0.
+        any_parent = any("parent" in s for s in sources.values())
+        any_two_ctors = any(
+            sum(1 for m in c.methods if m.method_name == c.name) >= 2
+            for c in env_classes
+        )
+        if any_parent:
+            score += 2.0
+        else:
+            notes.append("no parent-pointer or composing env reference found")
+        if any_two_ctors or len(env_classes) >= 2:
+            score += 2.0
+        else:
+            notes.append("only one env constructor visible across all "
+                         "env classes")
     severity = 0 if score >= 6 else (SEVERITY_MINOR if score >= 3
                                      else SEVERITY_MEDIUM)
     return CheckResult(earned=round(score, 1),
@@ -837,34 +946,57 @@ def _env_hierarchy(g: GradedSubmission) -> CheckResult:
 
 
 def _env_declare_set_get(g: GradedSubmission) -> CheckResult:
-    """Rubric row 12: Environment has declareVariable/setVariable/getVariable.
+    """Rubric row 12: declareVariable / setVariable / getVariable exist.
 
-    Fully independent of row 11 -- a student with a broken parent-ptr
-    constructor still gets full credit here if the three methods are
-    present, and vice versa. Unparseable-file fallback uses text grep.
+    The peer-review text says these methods belong to "Environment" but
+    doesn't say they must all live on the same class. A student who
+    split env into Global + Local classes might define
+    declareVariable on the local one and getVariable/setVariable on
+    the global one (or any other distribution). We accept any such
+    distribution: each method is credited if it exists on ANY env
+    class in the submission.
     """
     required = ["declareVariable", "setVariable", "getVariable"]
-    cls = g.class_for_role("Environment")
-    src = _role_source(g, "Environment") or ""
+    env_classes = g.classes_for_role("Environment")
     unparseable = _role_unparseable_note(g, "Environment")
+    primary_src = _role_source(g, "Environment") or ""
 
     present: List[str] = []
     grep_only: List[str] = []
+    on_class: dict = {}
     for m in required:
-        if cls is not None and g.method_for_role("Environment", m) is not None:
+        # AST: present on any env class (under any alias)?
+        aliases = g.config.method_aliases.get(("Environment", m), (m,))
+        found_on = None
+        for cls in env_classes:
+            for alias in aliases:
+                if any(method.method_name == alias for method in cls.methods):
+                    found_on = cls.name
+                    break
+            if found_on:
+                break
+        if found_on:
             present.append(m)
+            on_class[m] = found_on
             continue
-        # Text-level fallback: any alias visible in the source counts.
-        aliases = g.config.method_aliases.get(
-            ("Environment", m), (m,))
-        if cls is None and _grep_method(src, aliases):
+        # Text-grep fallback across each env class's source + the
+        # role's primary source (handles unparseable files).
+        all_src = primary_src + "\n" + "\n".join(
+            _read_source(g, c) for c in env_classes
+        )
+        if _grep_method(all_src, aliases):
             present.append(m)
             grep_only.append(m)
+
     score = round(4 * len(present) / len(required), 1)
     missing = [m for m in required if m not in present]
     notes: List[str] = []
     if unparseable:
         notes.append(unparseable)
+    split_methods = {on_class.get(m) for m in required if m in on_class}
+    split_methods.discard(None)
+    if len(split_methods) > 1:
+        notes.append("methods split across: " + ", ".join(sorted(split_methods)))
     if grep_only:
         notes.append("found via text match: " + ", ".join(grep_only))
     if missing:
@@ -873,6 +1005,15 @@ def _env_declare_set_get(g: GradedSubmission) -> CheckResult:
                                       else SEVERITY_MEDIUM)
     return CheckResult(earned=score, notes="; ".join(notes),
                        severity=severity)
+
+
+def _read_source(g: GradedSubmission, cls) -> str:
+    """Read a ClassRecord's source file, returning '' on any error."""
+    try:
+        return (g.submission.compiler_root / cls.file).read_text(
+            encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def _parser_procedure_and_factor(g: GradedSubmission) -> CheckResult:

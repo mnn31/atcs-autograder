@@ -104,6 +104,25 @@ def resolve_class_role(classes: Sequence, spec: RoleSpec):
     return best
 
 
+def resolve_class_role_all(classes: Sequence, spec: RoleSpec) -> List:
+    """Return EVERY ClassRecord that scores at or above MIN_ACCEPT_SCORE.
+
+    Sorted highest-scoring first. Used when a role can legitimately span
+    multiple classes -- e.g. a student who split Environment into
+    GlobalEnvironment + LocalEnvironment. The Procedures peer-review row
+    "declareVariable / setVariable / getVariable" doesn't say those
+    methods must all live on the same class, so the rubric checker
+    needs to look across every env-like class to score correctly.
+    """
+    scored: List[tuple] = []
+    for cls in classes:
+        score = _score_class(cls, spec)
+        if score >= MIN_ACCEPT_SCORE:
+            scored.append((score, cls))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [cls for _, cls in scored]
+
+
 def resolve_method(cls, method_aliases: Sequence[str]):
     """Return the first MethodRecord on cls whose name matches any alias.
 
