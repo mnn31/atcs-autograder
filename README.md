@@ -1,98 +1,84 @@
 # ATCS Compilers Autograder
 
 A reusable, lab-pluggable autograder for the ATCS Compilers & Interpreters
-sequence. Seven labs are currently wired up:
+sequence. Seven labs are wired up today, all sharing the same orchestrator,
+PDF blanksheet, and per-rubric airtightness rules.
 
-- **Scanner** (`autograders/ag-scanner/`) — grades a folder containing
-  the student's `scanner/` package (lab 1). Generates a synthetic
-  `_AGScannerTester.java` that tokenises one input file at a time
-  and prints one token per line; rubric covers documentation,
-  multi-character tokens, period/EOF behaviour, single-line comment
-  handling, and the four `$/^` error-recovery scenarios from the
-  peer review (100 pts).
-- **Parser** (`autograders/ag-parser/`) — grades a folder containing
-  `scanner/` + `parser/` (lab 3). The Parser executes Pascal as it
-  parses (no AST yet); the synthetic `_AGParserTester` drives
-  `parseStatement` in a loop while `scanner.hasNext()` is true and
-  matches WRITELN output. Rubric covers documentation, package
-  layout, currentToken field, BEGIN/END blocks, and parserTest0..4
-  (100 pts).
-- **AST** (`autograders/ag-ast/`) — grades the AST-lab rewrite where
-  Parser returns AST nodes (lab 4). `_AGASTTester` parses each
-  statement and calls `stmt.exec(env)` on a shared Environment.
-  Rubric covers abstract Statement / Expression, exec/eval coverage
-  across every AST class, READLN + IF/ELSE + REPEAT..UNTIL support,
-  and the required parserTest6 + parserTest4.5ForLoopReadln tests
-  (100 pts).
-- **Procedures** (`autograders/ag-procedures/`) — grades a `Compiler/`
-  folder of Java sources implementing a Pascal interpreter. Hidden
-  tests are driven by an autograder-synthesised `_AGTester.java` so a
-  student's hardcoded test filename in their own ParserTester can't
-  silently re-run the same baked-in file for every test.
-- **MIPS** (`autograders/ag-mips/`) — grades a folder of `.asm` files
-  for Lab 5 (MIPS assembly), running each in the bundled MARS 4.5
-  simulator and matching stdout against the official 7-row peer
-  review (52 pts).
-- **Subroutines** (`autograders/ag-subroutines/`) — grades a folder of
-  `.asm` files for the Memory and Subroutines lab. Drives each of
-  max2 / max3 / fact / fib through MARS with peer-review-derived
-  inputs (including negatives for max2/max3), inspects the source for
-  the structural requirements the rubric calls out (`jal max2` inside
-  max3, recursion + stack discipline inside fact / fib), and flags
-  the linked-list row REVIEW with the heap-vs-stack approach it
-  detected. Mirrors the official 6-row peer review (85 pts).
-- **CodeGen** (`autograders/ag-codegen/`) — grades a `Compiler/`
-  folder whose Pascal-to-MIPS emitter must produce assembly that runs
-  correctly under MARS. Same synthetic-driver pattern as Procedures:
-  we generate a `_AGCodeGenTester.java` that drives the student's
-  parser + emitter to write a `.asm`, then we run that `.asm`
-  through MARS and grade the resulting stdout against the lab's
-  required programs (parserTest9.txt + max.txt).
-
-Adding another lab is a matter of writing a new `config.py` + test
-suite next to those.
-
-Every student submission is a `.zip`. The tool produces a colour-coded
-PDF "blanksheet" report that mirrors the peer checkoff rubric, walks
-each deliverable to verify it has the required documentation and
-behaves as the lab specifies, and finishes with a quick review box and
-overall score. Every lab shares the same banner / Quick Review /
-rubric layout so a teacher who can skim one can skim the others.
-
-The labs answer slightly different questions:
-- **Procedures** — does the student's interpreter correctly run a
-  hidden test suite of PASCAL programs? (Tests are inputs to a
-  student-built tool, so a "hidden test suite" makes sense.)
-- **MIPS** / **Subroutines** — for each lab exercise, did the student
-  deliver an `.asm` with proper documentation that produces the
-  expected output? (The exercises ARE the deliverables; there is no
-  separate "hidden test suite" — the autograder verifies each
-  exercise directly.) Subroutines additionally inspects the source
-  for the structural requirements the peer-review sheet calls out
-  (max3 must `jal max2`; fact must be recursive with stack
-  discipline; etc.).
-- **CodeGen** — does the student's Pascal → MIPS emitter produce
-  assembly that, when fed back to MARS, prints the right thing for
-  the two lab-required programs (parserTest9 + max)?
-
-The blanksheet is **deliberately identical** across students so the
-teacher can scan for red cells and move on.
+Each student submission is a `.zip`. The tool extracts it, runs the
+lab's structural and behavioural checks, and emits a colour-coded PDF
+report that mirrors the official peer-review checkoff sheet row for
+row. The blanksheet layout is deliberately identical across students
+so a teacher can scan for red cells without re-orienting per
+submission.
 
 ---
 
-## Install from scratch (5 minutes)
+## Labs covered
 
-If you're on a fresh machine with nothing but a terminal, run the steps
-in order. Everything below is copy-paste.
+| Lab            | Wrapper                        | Submission shape           | Total |
+|----------------|--------------------------------|----------------------------|-------|
+| Scanner        | `autograders/ag-scanner/`      | `scanner/`                 | 100   |
+| Parser         | `autograders/ag-parser/`       | `scanner/` + `parser/`     | 100   |
+| AST            | `autograders/ag-ast/`          | full `Compiler/` tree      | 100   |
+| Procedures     | `autograders/ag-procedures/`   | full `Compiler/` tree      | 100   |
+| MIPS           | `autograders/ag-mips/`         | folder of `.asm` files     | 52    |
+| Subroutines    | `autograders/ag-subroutines/`  | folder of `.asm` files     | 85    |
+| CodeGen        | `autograders/ag-codegen/`      | full `Compiler/` tree      | 100   |
 
-### 1. Install the two prerequisites
+Totals match the official peer-review sheet for each lab. Adding
+another lab is a matter of dropping a new `config.py` + tests next to
+the existing ones.
 
-You need **Python 3.8+** and a **Java Development Kit (JDK)** with both
-`java` and `javac`. The bundled `java` shipped with macOS is fine, but
-it does not include `javac` on its own — you have to install a full
-JDK. (The MIPS lab on its own only needs `java`, but the Procedures
-lab needs `javac` to compile student code, so installing the JDK is
-the simplest path that covers both labs.)
+### What each lab grades
+
+- **Scanner** — does the student's `scanner.Scanner` produce the
+  right token stream? Tokenises a small bank of input files via a
+  synthesised `_AGScannerTester`; checks documentation, the
+  multi-char tokens (`<=`, `>=`, `<>`, `:=`), period-as-EOF + the
+  `hasNext()` contract, single-line comment handling, and the four
+  `$/^` error-recovery scenarios from the rubric.
+- **Parser** — does the student's parser EXECUTE Pascal as it
+  parses? The synthesised `_AGParserTester` calls
+  `parser.parseStatement()` in a loop while `scanner.hasNext()`
+  is true and matches WRITELN output against `parserTest0..4`.
+- **AST** — does the rewritten parser BUILD AST nodes that exec
+  correctly? `_AGASTTester` parses each statement and calls
+  `stmt.exec(env)` on a shared `Environment`. Tests:
+  `parserTest6` (IF + WHILE) and `parserTest4.5ForLoopReadln`
+  (READLN + FOR + downward WHILE).
+- **Procedures** — does the student's interpreter correctly run
+  a hidden test suite of PASCAL programs (procedures with args,
+  scope, return values, recursion, mutual recursion)?
+  `_AGTester.java` drives the resolved Parser / Program /
+  Environment so a hardcoded test filename in the student's own
+  `ParserTester` can't make every hidden test silently re-run the
+  same file.
+- **MIPS** — for each rubric exercise (`simple`, `add`/`mult`,
+  `evenodd`, `loops`, `array`, an open-ended program, ...) did
+  the student deliver a documented `.asm` whose stdout under MARS
+  4.5 matches the expected substrings?
+- **Subroutines** — same shape as MIPS, plus structural checks
+  the rubric calls out: `max3` must `jal max2`, `fact` must be
+  recursive with stack discipline, and the linked-list row is
+  REVIEW-tagged with the heap-vs-stack approach the autograder
+  detected.
+- **CodeGen** — does the student's Pascal -> MIPS emitter
+  produce assembly that, when fed back to MARS, prints the right
+  thing for the lab-required programs (`parserTest9.txt` and
+  `max.txt`)? `_AGCodeGenTester.java` drives the parser + emitter
+  to write a `.asm`; the runner then executes that asm under MARS
+  and matches stdout.
+
+---
+
+## Install (5 minutes)
+
+### 1. Prerequisites
+
+- **Python 3.8+**
+- **A JDK** with both `java` and `javac` on `PATH`. The macOS
+  default `java` is fine, but it does not include `javac` on its
+  own — you have to install a full JDK.
 
 macOS (Homebrew):
 
@@ -118,69 +104,40 @@ for the commands below.
 Verify both are on your `PATH`:
 
 ```bash
-python3 --version     # should print Python 3.8 or newer
-java -version         # should print a runtime version
-javac -version        # should print a compiler version (NOT "command not found")
+python3 --version     # Python 3.8 or newer
+java -version
+javac -version        # must NOT say "command not found"
 ```
 
-If `javac` is missing and `java` works, you installed the JRE only — go
-back and install a JDK (`openjdk-17-jdk` on Ubuntu, `openjdk@17` on
-macOS).
+If `javac` is missing and `java` works, you installed the JRE only —
+go back and install the JDK (`openjdk-17-jdk` on Ubuntu, `openjdk@17`
+on macOS).
 
-### 2. Clone the repo
+### 2. Clone and install Python deps
 
 ```bash
 git clone https://github.com/mnn31/atcs-autograder.git
 cd atcs-autograder/autograder-work
-```
 
-All commands from here run from inside `autograder-work/` (the folder
-that contains `agcore/`, `autograders/`, `vendor/`, and `ag-tests/`).
-
-### 3. Install the Python dependencies
-
-Using a virtual environment is optional but recommended so you don't
-touch your system Python:
-
-```bash
 python3 -m venv .venv
-source .venv/bin/activate      # on Windows: .venv\Scripts\activate
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-`requirements.txt` is two lines — `reportlab` (PDF output) and
-`javalang` (Java AST parsing). Everything else is bundled: the
-checkstyle jar, the MARS 4.5 simulator jar, and the checkstyle config
-all live in `vendor/`.
+`requirements.txt` is two lines: `reportlab` (PDF output) and
+`javalang` (Java AST parsing). The checkstyle jar, MARS 4.5
+simulator jar, and the checkstyle config are all bundled in
+`vendor/`.
 
-### 4. Smoke test
+All commands from here run from inside `autograder-work/`.
 
-Drop a student's submission zip somewhere and run the appropriate lab:
+### 3. Smoke test
+
+Drop one student zip somewhere and run the matching lab:
 
 ```bash
-# Scanner (scanner/ folder only):
-./autograders/ag-scanner/ag-scanner path/to/Scanner.zip \
-    -o ag-tests/scanner/outputs/
-
-# Parser (scanner/ + parser/):
-./autograders/ag-parser/ag-parser path/to/Parser.zip \
-    -o ag-tests/parser/outputs/
-
-# AST (full Compiler/ folder):
-./autograders/ag-ast/ag-ast path/to/Compiler.zip \
-    -o ag-tests/ast/outputs/
-
-# Procedures (Java Compiler/ folder):
 ./autograders/ag-procedures/ag-procedures path/to/Compiler.zip \
     -o ag-tests/procedures/outputs/
-
-# MIPS (.asm files):
-./autograders/ag-mips/ag-mips path/to/MIPS.zip \
-    -o ag-tests/mips/outputs/
-
-# Subroutines (.asm files):
-./autograders/ag-subroutines/ag-subroutines path/to/Subroutines.zip \
-    -o ag-tests/subroutines/outputs/
 ```
 
 You should see one line per grading stage and then:
@@ -190,112 +147,94 @@ You should see one line per grading stage and then:
 ```
 
 Open that PDF. If the banner, Quick Review box, and rubric table are
-all there, the install is working.
+all rendered, the install is working.
 
 ---
 
 ## Per-lab input/output layout
 
-Submissions for each lab live under their own folder, and reports
-land next to them:
+By convention each lab gets its own `ag-tests/<lab>/inputs/` and
+`ag-tests/<lab>/outputs/` pair. The `ag-tests/` root is gitignored
+so committing zips here will not accidentally push student work into
+the repo.
 
 ```
 ag-tests/
+├── scanner/
+│   ├── inputs/        # student Scanner.zip files
+│   └── outputs/       # generated PDF reports + overall.pdf
+├── parser/
+│   ├── inputs/
+│   └── outputs/
+├── ast/
+│   ├── inputs/
+│   └── outputs/
 ├── procedures/
-│   ├── inputs/        <- student Compiler.zip files for the Procedures lab
-│   └── outputs/       <- generated PDF reports + overall.pdf
+│   ├── inputs/
+│   └── outputs/
 ├── mips/
-│   ├── inputs/        <- student MIPS.zip files for the MIPS lab
-│   └── outputs/       <- generated PDF reports + overall.pdf
+│   ├── inputs/
+│   └── outputs/
 ├── subroutines/
-│   ├── inputs/        <- student .zip files for the Subroutines lab
-│   └── outputs/       <- generated PDF reports + overall.pdf
+│   ├── inputs/
+│   └── outputs/
 └── codegen/
-    ├── inputs/        <- student Compiler.zip files for the CodeGen lab
-    └── outputs/       <- generated PDF reports + overall.pdf
+    ├── inputs/
+    └── outputs/
 ```
 
-`ag-tests/` is gitignored, so committing zips here won't accidentally
-push student work into the repo.
+Each wrapper accepts either a single zip or a directory of zips; in
+the directory case a batch summary `overall.pdf` is produced
+alongside the per-student reports.
 
 ---
 
 ## Grading submissions
 
-### Procedures lab
+Single student (one zip):
 
 ```bash
-# Single student:
-./autograders/ag-procedures/ag-procedures path/to/student.zip \
-    -o ag-tests/procedures/outputs/
-
-# Whole folder:
-./autograders/ag-procedures/ag-procedures ag-tests/procedures/inputs/ \
-    -o ag-tests/procedures/outputs/
+./autograders/<wrapper>/<wrapper> path/to/Student.zip \
+    -o ag-tests/<lab>/outputs/
 ```
 
-### MIPS lab
+Whole folder of zips:
 
 ```bash
-# Single student:
-./autograders/ag-mips/ag-mips path/to/student.zip \
-    -o ag-tests/mips/outputs/
-
-# Whole folder:
-./autograders/ag-mips/ag-mips ag-tests/mips/inputs/ \
-    -o ag-tests/mips/outputs/
+./autograders/<wrapper>/<wrapper> ag-tests/<lab>/inputs/ \
+    -o ag-tests/<lab>/outputs/
 ```
 
-### Subroutines lab
+Concrete examples (one per lab):
 
 ```bash
-# Single student:
-./autograders/ag-subroutines/ag-subroutines path/to/student.zip \
-    -o ag-tests/subroutines/outputs/
-
-# Whole folder:
-./autograders/ag-subroutines/ag-subroutines ag-tests/subroutines/inputs/ \
-    -o ag-tests/subroutines/outputs/
+./autograders/ag-scanner/ag-scanner      ag-tests/scanner/inputs/      -o ag-tests/scanner/outputs/
+./autograders/ag-parser/ag-parser        ag-tests/parser/inputs/       -o ag-tests/parser/outputs/
+./autograders/ag-ast/ag-ast              ag-tests/ast/inputs/          -o ag-tests/ast/outputs/
+./autograders/ag-procedures/ag-procedures ag-tests/procedures/inputs/  -o ag-tests/procedures/outputs/
+./autograders/ag-mips/ag-mips            ag-tests/mips/inputs/         -o ag-tests/mips/outputs/
+./autograders/ag-subroutines/ag-subroutines ag-tests/subroutines/inputs/ -o ag-tests/subroutines/outputs/
+./autograders/ag-codegen/ag-codegen      ag-tests/codegen/inputs/      -o ag-tests/codegen/outputs/
 ```
 
-### CodeGen lab
-
-```bash
-# Single student:
-./autograders/ag-codegen/ag-codegen path/to/student.zip \
-    -o ag-tests/codegen/outputs/
-
-# Whole folder:
-./autograders/ag-codegen/ag-codegen ag-tests/codegen/inputs/ \
-    -o ag-tests/codegen/outputs/
-```
-
-Each student gets a file `<first>-<last>-<lab>-report.pdf` inside the
-output directory, plus a batch summary at `overall.pdf` listing every
-student's score. The student name comes from the `@author` tag in the
-class-level javadoc (Procedures) or the `# @author` line in the .asm
-header (MIPS), so reports stay consistent even if the zip filename is
-weird.
+Each student gets a file named `<first>-<last>-<lab>-report.pdf` in
+the output directory. The student name is taken from the `@author`
+tag in the class-level javadoc (for Java labs) or the `# @author`
+line in the .asm header (for asm labs), so reports stay consistent
+even when the zip filename is weird.
 
 ### Non-zip files are ignored
 
-When you point either tool at a directory, anything that isn't a real
-`.zip` is skipped — stray `README.txt`, `.DS_Store`, PDFs, other
+When a wrapper is pointed at a directory, anything that isn't a real
+`.zip` is skipped: stray `README.txt`, `.DS_Store`, PDFs, other
 folders, and macOS resource-fork siblings (`._Compiler.zip`) all get
 dropped silently. You can safely run the autograder against a messy
 `Downloads/` folder.
 
 ### If `java` / `javac` aren't on your PATH
 
-Either fix your `PATH` (preferred):
-
-```bash
-export PATH="/path/to/jdk/bin:$PATH"
-./autograders/ag-procedures/ag-procedures ag-tests/procedures/inputs/ \
-    -o ag-tests/procedures/outputs/
-```
-
-or point at the binaries directly without touching `PATH`:
+Either fix your `PATH` (preferred), or point at the binaries
+directly:
 
 ```bash
 ./autograders/ag-procedures/ag-procedures ag-tests/procedures/inputs/ \
@@ -303,7 +242,7 @@ or point at the binaries directly without touching `PATH`:
     --java /path/to/java --javac /path/to/javac
 ```
 
-ag-mips only needs `--java` (no `--javac`):
+`ag-mips` and `ag-subroutines` only need `--java` (no `--javac`):
 
 ```bash
 ./autograders/ag-mips/ag-mips ag-tests/mips/inputs/ \
@@ -311,15 +250,13 @@ ag-mips only needs `--java` (no `--javac`):
     --java /path/to/java
 ```
 
-If `./autograders/...` fails with a permission error, mark the wrapper
-executable (`chmod +x autograders/ag-procedures/ag-procedures`) or
-call it through Python directly:
+If `./autograders/...` fails with a permission error, mark the
+wrapper executable (`chmod +x autograders/<wrapper>/<wrapper>`) or
+invoke Python directly:
 
 ```bash
 python3 autograders/ag-procedures/grade.py \
     ag-tests/procedures/inputs/ -o ag-tests/procedures/outputs/
-python3 autograders/ag-mips/grade.py \
-    ag-tests/mips/inputs/ -o ag-tests/mips/outputs/
 ```
 
 ### CLI options
@@ -334,118 +271,135 @@ ag-subroutines  INPUT [-o OUTPUT_DIR] [--java JAVA]                 [--keep-temp
 ag-codegen      INPUT [-o OUTPUT_DIR] [--java JAVA] [--javac JAVAC] [--keep-temp]
 ```
 
-- `INPUT`: a `.zip` or a directory containing `.zip` files. Non-zip
+- `INPUT` — a `.zip` or a directory containing `.zip` files. Non-zip
   entries in a directory are silently ignored.
-- `-o, --output`: output directory (default `./reports/`).
-- `--java / --javac`: override auto-detected binaries.
-- `--keep-temp`: keep extracted temp dirs for debugging.
+- `-o, --output` — output directory (default `./reports/`).
+- `--java` / `--javac` — override auto-detected binaries.
+- `--keep-temp` — keep extracted temp dirs for debugging a weird
+  submission.
 
 ---
 
-## How a student submission is shaped
+## What a student submission looks like
 
-### Procedures
+### Scanner (lab 1)
 
-Students zip the same `Compiler/` folder they've been building up:
+A folder containing just the `scanner/` package — typically:
+
+```
+Compiler/scanner/
+    Scanner.java
+    ScanErrorException.java
+    ScannerTester.java         # optional; autograder uses its own
+    ScannerTest.txt            # optional; autograder ships its own
+    scannerTestAdvanced.txt    # optional
+```
+
+The autograder synthesises `scanner/_AGScannerTester.java` so the
+student's hardcoded test filename in their own `ScannerTester`
+cannot make every hidden test silently re-run the same baked-in
+file.
+
+### Parser (lab 3)
+
+A folder containing the `scanner/` package and a new `parser/`
+package:
 
 ```
 Compiler/
-    ast/*.java           # Statement, Expression, ProcedureDeclaration, ...
-    parser/*.java        # Parser.java, ParserTester.java, ...
-    scanner/*.java
-    environment/*.java
-    checkstyle.xml       # optional; we use our bundled copy either way
+    scanner/Scanner.java
+    parser/Parser.java
+    parser/ParserTester.java   # optional; synthetic driver wins
 ```
 
-The zip can either contain `Compiler/` as its top-level folder *or* be
-a zip of the folder's contents — the extractor normalises both. Stray
+`parser.Parser` is a top-down recursive descent parser that
+EXECUTES Pascal as it parses — `parseStatement` is `void` and
+side-effects WRITELN output. `_AGParserTester` calls
+`parseStatement` in a loop until `scanner.hasNext()` goes false.
+
+### AST (lab 4) and later (Procedures, CodeGen)
+
+Students zip the full `Compiler/` folder they have been building
+up:
+
+```
+Compiler/
+    ast/*.java           # Statement, Expression, Number, Variable,
+                         # BinOp, Writeln, Assignment, Block, If,
+                         # While, Readln, RepeatUntil, ...
+    parser/*.java        # Parser, ParserTester / CompilerTester
+    scanner/*.java
+    environment/*.java   # Environment (and optionally Global/Local
+                         # split)
+    emitter/*.java       # only in CodeGen lab
+    checkstyle.xml       # optional; bundled copy is used either way
+```
+
+The zip can contain `Compiler/` as its top-level folder *or* be a
+zip of the folder's contents — the extractor normalises both.
 `__MACOSX/` junk is ignored.
 
 Students put their `public static void main(String[])` in wildly
 different places: inside `parser.Parser`, inside `parser.ParserTester`,
-inside a top-level `Main` or `Driver`, etc. The grader scans the
-submission, scores every candidate, and probes them in order — so a
-student whose main lives in `ParserTester` is still graded correctly.
-The Quick Review box notes which main class actually ran when it
-wasn't the default.
+inside a top-level `Main` or `Driver`. The grader scans the
+submission, scores every candidate, and probes them in order. The
+synthetic per-lab driver is preferred when present.
 
-### Subroutines
+### Subroutines and MIPS (asm labs)
 
-Students zip a folder of `.asm` files, one per subroutine they wrote.
-The expected deliverables (per the Subroutines lab PDF) are:
+Students zip a folder of `.asm` files. Filename matching is fuzzy:
+a student who saved `factorial.asm` as `factor.asm` or `ex_fact.asm`
+still gets credit for the `fact` row.
 
-- `max2.asm` — subroutine returning the greater of two ints, with a
-  driver that prompts and prints the result
-- `max3.asm` — subroutine returning the greatest of three ints; the
-  rubric explicitly requires this to call `max2` rather than
-  re-doing the comparison locally
-- `fact.asm` — recursive factorial with proper $ra push/pop
-- `fib.asm` — recursive Fibonacci
-- `sumlist.asm` / `linkedlist.asm` — linked-list deliverable
-  (rubric row asks the peer to circle "heap" or "stack"; the
-  autograder detects which approach the student used)
+Subroutines expects: `max2.asm` (with prompt + greater-of-two
+message; works on negatives), `max3.asm` (must `jal max2`),
+`fact.asm` (recursive + push/pop `$ra`), `fib.asm` (recursive),
+and a linked-list deliverable (`sumlist.asm` / `linkedlist.asm` /
+`newlistnode.asm`).
 
-The fuzzy filename matcher is generous: a student who saved
-factorial.asm as `factor.asm` or `ex_fact.asm` still gets credit for
-the fact row. Each subroutine is tested with multiple inputs
-(including negatives for max2 / max3, and a recursion depth that
-forces real stack discipline for fact / fib).
-
-### MIPS
-
-Students zip a folder of `.asm` files. The expected exercises (per Lab
-5 PDF) are:
-
-- `simple.asm` — Exercise 2 sample 2+3 program
-- something like `mult.asm` / `add.asm` — Exercise 4 (read inputs +
-  compute + print)
-- `evenodd.asm` — Exercise 5
-- `loops.asm` — Exercise 6
-- one Next-section program: `array.asm` (sum/avg/min/max) and either
-  `guessingGame.asm` variant
-- one "more interesting MIPS program of your own choice"
-
-Students name files inconsistently (`parity.asm` instead of
-`evenodd.asm`, `range.asm` instead of `loops.asm`, etc.). The grader
-fuzzy-matches each rubric exercise to a student file using preferred
-basenames, name-token sets, and content substrings, so a student who
-renamed a file still gets credit. The leftover unmatched `.asm` is
-treated as the "interesting" open-ended program.
+MIPS expects: `simple.asm` (Exercise 2), `mult.asm` or `add.asm`
+(Exercise 4 — either is enough), `evenodd.asm` (Exercise 5),
+`loops.asm` (Exercise 6), one Next-section program (`array.asm`
+plus a `guessingGame` variant), and one open-ended "more
+interesting" program.
 
 ---
 
 ## What goes in the report
 
-Both labs share the same overall layout. The fine-grained sections
-differ because they grade fundamentally different things.
+The blanksheet layout is identical across all labs. The fine-grained
+sections vary because each lab grades a fundamentally different
+artifact.
 
-1. **At-a-glance banner** — five (MIPS) or six (Procedures) coloured
-   cells at the top of page 1. Green / amber / red gives the whole
-   verdict without scrolling.
+1. **At-a-glance banner** — coloured cells at the top of page 1
+   summarising each major rubric category. Green / amber / red
+   gives the whole verdict without scrolling. Cell count varies by
+   rubric size (4–7 cells typical).
 2. **Quick Review** — summary bullets + overall score with a green /
    amber / red band behind the score. Sits directly under the banner
-   so a teacher doing a fast pass sees the 3–5 line verdict before
-   any detail table.
+   so a fast pass sees the 3–5 line verdict before any detail
+   table.
 3. **Rubric** — one row per rubric line, severity-shaded. Partial-
    credit rows are tagged **REVIEW** so a human can confirm.
 4. **Per-deliverable detail** —
-   - Procedures: an "Internal Functional Test Cases" table for the
-     ten hidden PASCAL programs run against the student's parser.
-   - MIPS: an `.asm` file inventory + a per-exercise verification
-     section showing the stdin we piped in, what we looked for, and
-     what the student's program printed.
-5. **(Procedures only) Checkstyle Details** — up to 20 concrete
+   - Java labs (Scanner / Parser / AST / Procedures / CodeGen):
+     an "Internal Functional Test Cases" table listing every
+     hidden test, what was fed in (stdin if any), expected
+     output, and the student's actual output.
+   - Asm labs (MIPS / Subroutines): an `.asm` file inventory plus
+     a per-exercise verification section showing the stdin we
+     piped in, the expected substrings, and the student's
+     printed output.
+5. **Checkstyle Details** (Java labs only) — up to 20 concrete
    violations (file, line, rule, message).
-6. **(Procedures only) Documentation Review** — one row per class
-   and per method.
-7. **(Procedures only) Appendix: Hidden Test Suite** — for each
-   hidden PASCAL program, the expected behaviour and the student's
-   *actual* output side-by-side. (MIPS has no equivalent; the
-   per-exercise detail in section 4 already shows the same
-   information for each deliverable.)
+6. **Documentation Review** (Java labs only) — one row per class
+   and one row per method, listing missing tags or missing prose.
+7. **Appendix: Hidden Test Suite** (Procedures only) — for each
+   hidden PASCAL program, the expected behaviour and the
+   student's actual output side-by-side.
 
-A typical Procedures report runs 10–14 pages; MIPS reports run 3–5
-pages because there's no per-method documentation listing.
+Java-lab reports typically run 8–14 pages. Asm-lab reports run
+3–5 pages because there is no per-method documentation listing.
 
 ---
 
@@ -457,192 +411,238 @@ autograder-work/
 ├── requirements.txt
 ├── .gitignore
 ├── vendor/
-│   ├── checkstyle-10.14.0-all.jar      # used by ag-procedures
-│   ├── checkstyle.xml                  # used by ag-procedures
-│   └── Mars4_5.jar                     # used by ag-mips
+│   ├── checkstyle-10.14.0-all.jar      # used by every Java lab
+│   ├── checkstyle.xml                  # used by every Java lab
+│   └── Mars4_5.jar                     # used by every asm-running lab
 ├── agcore/                              # shared, reusable across labs
-│   ├── extractor.py                    # zip handling, both labs
-│   ├── rubric.py                       # rubric items, severity
-│   ├── report.py                       # Procedures PDF renderer
-│   ├── grader.py                       # Procedures orchestrator
-│   ├── checkstyle_runner.py            # ag-procedures only
-│   ├── javadoc_parser.py               # ag-procedures only
-│   ├── proximity.py                    # ag-procedures only
-│   ├── role_resolver.py                # ag-procedures only
-│   ├── java_runner.py                  # ag-procedures only
-│   ├── mars_runner.py                  # ag-mips only
-│   ├── asm_header_parser.py            # ag-mips only
-│   ├── mips_grader.py                  # MIPS orchestrator
-│   └── mips_report.py                  # MIPS PDF renderer
+│   ├── extractor.py                    # zip handling for every lab
+│   ├── rubric.py                       # rubric items, severity model
+│   ├── report.py                       # Java-lab PDF renderer
+│   ├── grader.py                       # Java-lab orchestrator + dispatch
+│   ├── synthetic_tester.py             # per-submission Java drivers
+│   ├── scanner_runner.py               # ag-scanner test runner
+│   ├── codegen_runner.py               # ag-codegen test runner
+│   ├── checkstyle_runner.py            # used by every Java lab
+│   ├── javadoc_parser.py               # used by every Java lab
+│   ├── proximity.py                    # documentation scoring
+│   ├── role_resolver.py                # student-rename tolerance
+│   ├── java_runner.py                  # javac + java orchestration
+│   ├── mars_runner.py                  # MARS jar orchestration
+│   ├── asm_header_parser.py            # .asm header doc parsing
+│   ├── mips_grader.py                  # asm-lab orchestrator
+│   └── mips_report.py                  # asm-lab PDF renderer
 ├── autograders/
-│   ├── ag-procedures/
-│   │   ├── grade.py
-│   │   ├── ag-procedures               # bash wrapper
-│   │   ├── config.py
-│   │   └── tests/                      # PASCAL programs + expected.json
-│   ├── ag-mips/
-│   │   ├── grade.py
-│   │   ├── ag-mips                     # bash wrapper
-│   │   ├── config.py
-│   │   └── tests/                      # reserved for future per-test
-│   │                                   #   files; current setup keeps
-│   │                                   #   stdin inline in config.py
-│   ├── ag-subroutines/
-│   │   ├── grade.py
-│   │   ├── ag-subroutines              # bash wrapper
-│   │   ├── config.py
-│   │   └── tests/                      # reserved for future per-test
-│   │                                   #   files; stdin lives inline in
-│   │                                   #   config.py
-│   └── ag-codegen/
-│       ├── grade.py
-│       ├── ag-codegen                  # bash wrapper
-│       ├── config.py
-│       └── tests/
-└── ag-tests/                            # gitignored
-    ├── procedures/
-    │   ├── inputs/                     # student zips
-    │   └── outputs/                    # generated PDFs
-    └── mips/
-        ├── inputs/                     # student zips
-        └── outputs/                    # generated PDFs
+│   ├── ag-scanner/        # config.py + grade.py + ag-scanner + tests/
+│   ├── ag-parser/         # config.py + grade.py + ag-parser   + tests/
+│   ├── ag-ast/            # config.py + grade.py + ag-ast      + tests/
+│   ├── ag-procedures/     # config.py + grade.py + ag-procedures + tests/
+│   ├── ag-mips/           # config.py + grade.py + ag-mips     + tests/
+│   ├── ag-subroutines/    # config.py + grade.py + ag-subroutines + tests/
+│   └── ag-codegen/        # config.py + grade.py + ag-codegen  + tests/
+└── ag-tests/                            # gitignored; per-lab inputs/outputs
 ```
+
+Each `autograders/<lab>/` folder has the same shape: a `config.py`
+that declares the rubric, role/file matchers, hidden tests, and a
+`build_config()` factory; a `grade.py` orchestrator; a bash wrapper
+named after the lab; and a `tests/` folder holding test inputs and
+an `expected.json` describing them.
 
 ---
 
 ## Adding a new lab
 
-1. Make `autograders/ag-<labname>/` next to the existing autograders.
-2. Decide which orchestrator shape fits — Procedures-style (Java
-   source tree + javadoc) or MIPS-style (flat .asm + simulator
-   runner). Most labs will fit one of those two patterns.
-3. Copy the closest existing `grade.py` and tweak its `import config`.
-4. Write `config.py` — define the rubric, role/file matchers, hidden
-   tests, and a `build_config()` factory that returns the right
-   `LabConfig` / `MipsLabConfig`.
+1. Make `autograders/ag-<labname>/` next to the existing ones.
+2. Pick the closest existing orchestrator shape:
+   - Java source tree with hidden inputs and stdout matching:
+     `ag-procedures` / `ag-ast` / `ag-codegen`.
+   - Pure asm files run through MARS:
+     `ag-mips` / `ag-subroutines`.
+3. Copy that lab's `grade.py` and tweak `import config`.
+4. Write `config.py`: declare `CLASS_ROLES` / `METHOD_ALIASES` (for
+   Java labs) or `EXERCISES` / `ROLE_TESTS` (for asm labs), then
+   write the rubric checkers, and finish with a `build_config()`
+   factory that returns the right `LabConfig` / `MipsLabConfig`.
+5. If the lab needs a new synthetic Java driver shape, add a
+   factory in `agcore/synthetic_tester.py` and a dispatch case in
+   `agcore/grader.py:_maybe_build_synthetic_tester`. The existing
+   kinds (`scanner`, `parser`, `ast`, `procedures`, `codegen`)
+   cover most patterns.
+6. If the lab needs a custom test-pass/fail rule (e.g. the
+   `prefix_then_error` mode the Scanner lab uses for the
+   ScanErrorException case), add a runner under `agcore/` and
+   wire it via `LabConfig.test_runner`.
 
-The shared `agcore` modules stay untouched: everything lab-specific
-lives under `autograders/ag-<labname>/`.
+The shared `agcore` modules stay untouched for run-of-the-mill new
+labs — everything lab-specific lives under `autograders/ag-<labname>/`.
 
 ---
 
-## Tolerating student renames
+## Student-rename tolerance
 
-Both labs do this differently because the source shape is different.
+The peer-review rubrics name specific classes and methods; students
+often rename. The autograder reproduces the mental step a human
+grader takes when they recognise a renamed class as filling the
+same role.
 
-**Procedures (role-based class + method resolution).** The peer-review
-rubric names specific classes (`ProcedureCall`, `ProcedureDeclaration`,
-`Environment`, `Program`, `Parser`) and methods (`exec`, `eval`,
-`declareVariable`, ...). Students often rename — `ProcedureDecl`,
-`Call`, `Env`, `declareVar`, `parseProc` — and a human grading the
-peer review would still recognise the renamed class as filling the
-same ROLE.
+**Java labs (role-based class + method resolution).** Each lab's
+`config.py` declares a `CLASS_ROLES` dict mapping a rubric role
+name (`"ProcedureCall"`, `"Environment"`, `"Statement"`, ...) to a
+`RoleSpec` (preferred name, aliases, name-token sets, expected
+superclass, required methods, preferred directory). `METHOD_ALIASES`
+maps `(class_role, method_role)` pairs to an ordered list of
+acceptable method names. `agcore/role_resolver.py` scores every
+parsed class on these signals and returns the highest scorer; the
+first matching alias wins for methods. A student who writes
+`class ProcCall extends Expression { public int eval(Environment env) { ... } }`
+resolves just like the canonical `ProcedureCall.eval`.
 
-`agcore/role_resolver.py` reproduces that mental step. Each lab's
-`config.py` declares a `CLASS_ROLES` dict mapping a role name to a
-`RoleSpec` (preferred name, aliases, token sets, expected superclass,
-required methods). The resolver scores every parsed class on a
-weighted mix of those signals and returns the highest scorer.
+For the Procedures lab specifically, `Environment` can resolve to a
+single class with a parent pointer OR to a `GlobalEnvironment` +
+`LocalEnvironment` split — both shapes are accepted, and the
+declareVariable / setVariable / getVariable check aggregates across
+every env-like class.
 
-**MIPS (filename + content fuzzy matching).** Students name their
-`.asm` files inconsistently. Each `EXERCISES` entry in
-`autograders/ag-mips/config.py` carries a list of preferred basenames,
-loose name-token matchers, and substrings to look for in the file
-body. The orchestrator scores every candidate and binds the highest
+**Asm labs (filename + content fuzzy matching).** Each `EXERCISES`
+entry carries a list of preferred basenames, loose name-token
+matchers, and substrings to look for in the file body. The
+orchestrator scores every candidate file and binds the highest
 scorer. A student who saved `loops.asm` as `range.asm` still earns
 the loops-exercise credit.
 
 ---
 
-## Airtight rubric (unparseable / missing-file fallbacks)
+## Airtightness (unparseable / missing-file fallbacks)
 
 Every rubric checker that depends on AST-resolved classes or methods
-(Procedures) or matched files (MIPS) is built so a single broken
-input can't cascade into "everything is missing" zeros. Procedures
-adds a text-level grep fallback when javalang can't parse a file.
-MIPS scores per-exercise rows independently so a missing `array.asm`
-doesn't affect the `evenodd.asm` row, and so on.
+(Java labs) or matched files (asm labs) is built so a single broken
+input cannot cascade into "everything is missing" zeros.
 
-Rubric rows are also mutually independent: a student missing
-`ProcedureCall` still gets the full 5 pts for `ProcedureDeclaration`,
-and vice versa. One broken piece does not cascade into unrelated
-rows.
+- Java labs add a text-level grep fallback when `javalang` can't
+  parse a file, so a student whose `Parser.java` has a missing
+  semicolon still gets credit for methods that visibly exist in
+  the file.
+- Asm labs score per-exercise rows independently — a missing
+  `array.asm` does not affect the `evenodd.asm` row, and so on.
+- Rubric rows are also mutually independent: a student missing
+  `ProcedureCall` still gets the full 5 pts for
+  `ProcedureDeclaration`, and vice versa.
+
+One broken piece does not cascade into unrelated rows.
 
 ---
 
-## How MIPS scoring works
+## How synthetic Java drivers work
 
-The rubric just goes exercise-by-exercise. There's no separate test
-layer: each row's job is "for this exercise, did the student deliver
-a properly documented `.asm` that produces the expected output?".
+For every Java-source lab, the autograder generates a fresh
+`_AG*Tester.java` per submission, drops it into the student's tree
+under the right package, compiles it alongside the student's code,
+and locks it as the main class for the hidden test suite.
 
-Per-exercise rubric rows are split:
+| Lab        | Synthesised driver         | Drives                                       |
+|------------|----------------------------|----------------------------------------------|
+| Scanner    | `_AGScannerTester`         | scan one file, print one token per line      |
+| Parser     | `_AGParserTester`          | loop `parser.parseStatement()` until EOF     |
+| AST        | `_AGASTTester`             | loop parseStatement + `stmt.exec(env)`       |
+| Procedures | `_AGTester`                | parseProgram + `program.exec(env)`           |
+| CodeGen    | `_AGCodeGenTester`         | parseProgram + emit asm to `args[1]`         |
+
+This bypasses the student's own `ParserTester` / `ScannerTester` /
+`CompilerTester` for the hidden run, which means a hardcoded test
+filename in the student's tester cannot make every hidden test
+silently re-run the same baked-in file. The student's tester is
+left intact — only the hidden suite uses the synthetic driver.
+
+If synthesis cannot produce a confident driver (no Parser-shaped
+class with a recognisable parse method, for instance), the
+orchestrator falls back to probing the student's own
+`public static void main(String[])` candidates in score order.
+
+---
+
+## How asm-lab scoring works
+
+The rubric goes exercise-by-exercise. There is no separate test
+layer: each row's job is "for this exercise, did the student
+deliver a properly documented `.asm` that produces the expected
+output?".
+
+Per-exercise rows are typically split:
 
 - **25%** for the file being present in the submission.
 - **25%** for a complete header comment block (`# @author`,
   `# @version`, a description).
-- **50%** for the program's runtime behaviour — stdin is piped in
-  via the JVM, MARS 4.5 assembles + runs the program, and stdout is
-  matched case-insensitively against expected substrings *in order*.
-  Substring matching (rather than exact line equality) means students
-  who decorate output with prompts ("Enter a number: ") still pass.
+- **50%** for the program's runtime behaviour — stdin is piped
+  via the JVM, MARS 4.5 assembles and runs the program, and
+  stdout is matched case-insensitively against expected
+  substrings in order. Substring matching (rather than exact
+  line equality) means students who decorate output with prompts
+  ("Enter a number: ") still pass.
 
 Some exercises run multiple verification cases (e.g. evenodd is
 exercised with both an even and an odd input). These are not
 separate tests, just multiple eyes on the same deliverable. The
 behavioural sub-score is the proportion of cases that pass.
 
-Beyond the per-exercise rows the rubric also includes:
+Beyond the per-exercise rows the asm rubrics also include:
 
-- **Header docs across all .asm files** — proportional credit.
-- **Comment density** — average `#`-lines / total-non-blank-lines
-  across files with instructions. Lab text says "comment every 2 or
-  3 lines"; the rubric's threshold is 40% (full) / 25% (half) / below
-  25% (zero). A soft signal, deliberately generous.
-- **Open-ended "more interesting" program** — REVIEW row: file
-  exists + has a header + assembles cleanly. Creativity is not
-  autogradable; the teacher should skim the file.
+- **Header docs across all `.asm` files** — proportional credit.
+- **Comment density** (MIPS) — average `#`-lines /
+  total-non-blank-lines across files with instructions. Lab text
+  says "comment every 2 or 3 lines"; the rubric's threshold is
+  40% (full) / 25% (half) / below 25% (zero). Deliberately
+  generous.
+- **Open-ended "more interesting" program** (MIPS) — REVIEW row:
+  file exists + has a header + assembles cleanly. Creativity is
+  not autogradable; the teacher should skim the file.
+- **Linked-list approach** (Subroutines) — REVIEW row that
+  surfaces which approach was detected (`syscall 9` ⇒ heap, `$sp`
+  manipulation in node context ⇒ stack) so the teacher can
+  circle the right rubric option.
 
 ---
 
 ## Tuning the strictness
 
-### Procedures
+Each lab's strictness lives in its `config.py`, not in `agcore`.
 
-- Keyword overlap thresholds live in
-  `autograders/ag-procedures/config.py` under `CLASS_KEYWORDS` and
-  `METHOD_KEYWORDS`.
+**Java labs (Scanner / Parser / AST / Procedures / CodeGen)**
+
+- `CLASS_KEYWORDS` / `METHOD_KEYWORDS` set the keyword-overlap
+  thresholds for documentation proximity. Lower the threshold
+  to be more permissive.
 - `MIN_METHOD_DESCRIPTION_WORDS` (default `0`) flags too-short
-  description prose.
-- Rubric checkers grant partial credit proportionally; tighten by
-  lowering the fractions in `_class_methods_tags`, etc.
+  prose. Raise to `3`–`5` to catch one-word "TODO" stubs.
+- Most rubric checkers grant partial credit proportionally;
+  tightening means lowering the fractions inside the relevant
+  checker (e.g. `_class_methods_tags` in ag-procedures).
 
-### MIPS
+**Asm labs (MIPS / Subroutines)**
 
-- Each `MipsTestSpec` in `autograders/ag-mips/config.py` is one
-  verification case for an exercise — its `expected_substrings` list
-  is what stdout must contain (in order, case-insensitively). Add or
-  remove substrings to make a case stricter or looser.
+- Each `MipsTestSpec` is one verification case for an exercise.
+  Its `expected_substrings` list is what stdout must contain (in
+  order, case-insensitively). Add or remove substrings to make
+  a case stricter or looser.
 - Add or remove cases per exercise to widen or narrow the
-  verification. Single-case exercises (`ex2_simple`, `next_array`)
-  rely on one input; multi-case exercises (`ex5_evenodd`,
-  `ex6_loops`) exercise the same `.asm` with multiple inputs.
-- The `min_pass_for_full` arg on `_scored_exercise_row(...)` lets an
-  exercise earn full credit when at least N cases pass — used for
-  Exercise 4 because either multiplication OR addition is
-  acceptable, so passing one of the two is enough.
+  verification. Single-case exercises rely on one input; multi-
+  case exercises exercise the same `.asm` with multiple inputs.
+- `min_pass_for_full` on `_scored_exercise_row(...)` lets an
+  exercise earn full credit when at least N cases pass — used
+  by MIPS Exercise 4 because either multiplication OR addition
+  is acceptable.
 - Comment-density thresholds live in `_comment_density_row`.
 
 ---
 
 ## Known caveats
 
-- Procedures: every submission is compiled from scratch, so big
-  classes take real CPU time. Expect ~5–15 s per submission with a
-  warm JVM.
-- MIPS: each test invocation spawns a fresh JVM running the MARS jar.
-  Expect ~1–2 s per test, so a typical submission takes ~10–15 s
-  through all rubric rows.
-- The rubric has partial-credit checks. Don't treat the score as
-  gospel — the point of the blanksheet is to make manual review
-  fast, not replace it.
+- **Java labs**: every submission is compiled from scratch, so
+  big trees take real CPU time. Expect ~5–15 s per submission
+  with a warm JVM; the AST and Procedures labs are the slowest.
+- **Asm labs**: each test invocation spawns a fresh JVM running
+  the MARS jar. Expect ~1–2 s per test, so a typical submission
+  runs ~10–15 s through all rubric rows.
+- **The score is not gospel.** The rubric has partial-credit and
+  REVIEW rows by design. The point of the blanksheet is to make
+  manual review fast, not replace it — always skim the PDF
+  before publishing a grade.
